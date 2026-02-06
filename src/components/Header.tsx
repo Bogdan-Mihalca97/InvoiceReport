@@ -9,13 +9,13 @@ const Header = () => {
             <Zap className="h-8 w-8" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Invoice Data Extractor</h1>
-            <p className="text-sm opacity-90">Electricity Invoice Processing & Analysis</p>
+            <h1 className="text-2xl font-bold tracking-tight">Extractor Date Facturi</h1>
+            <p className="text-sm opacity-90">Procesare și Analiză Facturi Energie Electrică</p>
           </div>
         </div>
         <div className="flex items-center gap-2 bg-primary-foreground/10 px-4 py-2 rounded-lg">
           <FileSpreadsheet className="h-5 w-5" />
-          <span className="text-sm font-medium">Excel Export Ready</span>
+          <span className="text-sm font-medium">Export Excel Disponibil</span>
         </div>
       </div>
     </header>

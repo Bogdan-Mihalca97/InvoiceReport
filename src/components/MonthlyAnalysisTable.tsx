@@ -25,19 +25,6 @@ const MonthlyAnalysisTable = ({ analysis }: MonthlyAnalysisTableProps) => {
     return new Intl.NumberFormat('ro-RO').format(num);
   };
 
-  // Calculate max value for heatmap coloring
-  const maxValue = Math.max(
-    ...analysis.flatMap((item) => Object.values(item.monthlyData))
-  );
-
-  const getHeatmapColor = (value: number) => {
-    if (value === 0) return '';
-    const intensity = value / maxValue;
-    if (intensity > 0.75) return 'bg-energy-teal/30 text-foreground font-semibold';
-    if (intensity > 0.5) return 'bg-energy-teal/20 text-foreground';
-    if (intensity > 0.25) return 'bg-energy-teal/10 text-foreground';
-    return 'bg-energy-teal/5 text-foreground';
-  };
 
   const formatMonth = (month: string) => {
     const [year, m] = month.split('-');
@@ -48,7 +35,7 @@ const MonthlyAnalysisTable = ({ analysis }: MonthlyAnalysisTableProps) => {
     <Card className="shadow-card animate-slide-up">
       <CardHeader className="border-b border-border">
         <CardTitle className="text-xl font-semibold text-foreground">
-          Raport Analiză - Monthly Consumption by NLC (kWh)
+          Raport Analiză - Consum Lunar pe NLC (kWh)
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
@@ -57,10 +44,10 @@ const MonthlyAnalysisTable = ({ analysis }: MonthlyAnalysisTableProps) => {
             <TableHeader>
               <TableRow className="bg-muted/30">
                 <TableHead className="sticky left-0 bg-muted/30 z-10 font-semibold">
-                  NLC Code
+                  Cod NLC
                 </TableHead>
                 <TableHead className="sticky left-[100px] bg-muted/30 z-10 font-semibold">
-                  Location
+                  Locație
                 </TableHead>
                 {sortedMonths.map((month) => (
                   <TableHead key={month} className="text-center whitespace-nowrap">
@@ -90,11 +77,11 @@ const MonthlyAnalysisTable = ({ analysis }: MonthlyAnalysisTableProps) => {
                   {sortedMonths.map((month) => {
                     const value = item.monthlyData[month] || 0;
                     return (
-                      <TableCell 
-                        key={month} 
-                        className={`text-center tabular-nums ${getHeatmapColor(value)}`}
+                      <TableCell
+                        key={month}
+                        className="text-center tabular-nums"
                       >
-                        {value > 0 ? formatNumber(value) : '-'}
+                        {value !== 0 ? formatNumber(value) : '-'}
                       </TableCell>
                     );
                   })}
@@ -108,11 +95,11 @@ const MonthlyAnalysisTable = ({ analysis }: MonthlyAnalysisTableProps) => {
               ))}
               {analysis.length === 0 && (
                 <TableRow>
-                  <TableCell 
-                    colSpan={sortedMonths.length + 4} 
+                  <TableCell
+                    colSpan={sortedMonths.length + 4}
                     className="text-center py-8 text-muted-foreground"
                   >
-                    No analysis data available. Process invoices to generate the report.
+                    Nu sunt date de analiză disponibile. Procesați facturi pentru a genera raportul.
                   </TableCell>
                 </TableRow>
               )}

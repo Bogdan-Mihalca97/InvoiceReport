@@ -9,14 +9,14 @@ interface ProcessingSummaryCardProps {
 const ProcessingSummaryCard = ({ summary }: ProcessingSummaryCardProps) => {
   const stats = [
     {
-      label: 'Total Files',
+      label: 'Total Fișiere',
       value: summary.totalFiles,
       icon: FileText,
       color: 'text-primary',
       bgColor: 'bg-primary/10',
     },
     {
-      label: 'Successful',
+      label: 'Reușite',
       value: summary.successfulFiles,
       icon: FileCheck,
       color: 'text-status-ok',
@@ -30,7 +30,7 @@ const ProcessingSummaryCard = ({ summary }: ProcessingSummaryCardProps) => {
       bgColor: 'bg-status-incomplete/10',
     },
     {
-      label: 'Errors',
+      label: 'Erori',
       value: summary.errorFiles,
       icon: XCircle,
       color: 'text-status-error',

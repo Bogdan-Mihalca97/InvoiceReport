@@ -8,48 +8,108 @@ import MonthlyAnalysisTable from '@/components/MonthlyAnalysisTable';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import {
-  mockInvoices,
-  mockMonthlyAnalysis,
-  mockProcessingSummary,
-} from '@/data/mockInvoices';
 import { exportToExcel } from '@/utils/excelExport';
 import { InvoiceRecord, MonthlyAnalysis, ProcessingSummary } from '@/types/invoice';
+import { extractTextFromPDF } from '@/utils/pdfExtractor';
+import { parseInvoiceText } from '@/utils/invoiceParser';
+import { generateMonthlyAnalysis, generateProcessingSummary } from '@/utils/analysisGenerator';
 
 const Index = () => {
   const { toast } = useToast();
   const [isProcessing, setIsProcessing] = useState(false);
-  const [hasData, setHasData] = useState(true); // Start with mock data for demo
-  const [invoices, setInvoices] = useState<InvoiceRecord[]>(mockInvoices);
-  const [analysis, setAnalysis] = useState<MonthlyAnalysis[]>(mockMonthlyAnalysis);
-  const [summary, setSummary] = useState<ProcessingSummary>(mockProcessingSummary);
+  const [hasData, setHasData] = useState(false);
+  const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
+  const [analysis, setAnalysis] = useState<MonthlyAnalysis[]>([]);
+  const [summary, setSummary] = useState<ProcessingSummary>({
+    totalFiles: 0,
+    successfulFiles: 0,
+    incompleteFiles: 0,
+    errorFiles: 0,
+    processingDate: new Date().toISOString().split('T')[0],
+  });
 
-  const handleFilesSelected = useCallback((files: FileList) => {
+  const handleFilesSelected = useCallback(async (files: FileList) => {
     setIsProcessing(true);
-    
-    // Simulate processing delay
-    setTimeout(() => {
-      setIsProcessing(false);
+
+    try {
+      const processedInvoices: InvoiceRecord[] = [];
+      const fileArray = Array.from(files);
+
+      // Process each PDF file
+      for (const file of fileArray) {
+        if (file.type === 'application/pdf') {
+          try {
+            // Extract text from PDF
+            const text = await extractTextFromPDF(file);
+
+            // Parse the text to extract invoice data (returns array of records, one per NLC)
+            const invoiceRecords = parseInvoiceText(text, file.name);
+            processedInvoices.push(...invoiceRecords);
+          } catch (error) {
+            console.error(`Error processing ${file.name}:`, error);
+            // Add error record for failed file
+            processedInvoices.push({
+              id: Math.random().toString(36).substring(7),
+              fileName: file.name,
+              supplier: 'NECUNOSCUT',
+              invoiceNumber: '',
+              issueDate: '',
+              clientName: '',
+              locationName: '',
+              nlcCode: '',
+              podCode: '',
+              address: '',
+              startDate: '',
+              endDate: '',
+              consumptionKwh: 0,
+              sourceLine: '',
+              totalPayment: 0,
+              processingDate: new Date().toISOString().split('T')[0],
+              documentLink: '',
+              status: 'ERROR',
+              observations: `Eroare la procesare: ${error instanceof Error ? error.message : 'Eroare necunoscută'}`,
+            });
+          }
+        }
+      }
+
+      // Generate analysis and summary
+      const monthlyAnalysis = generateMonthlyAnalysis(processedInvoices);
+      const processingSummary = generateProcessingSummary(processedInvoices);
+
+      // Update state
+      setInvoices(processedInvoices);
+      setAnalysis(monthlyAnalysis);
+      setSummary(processingSummary);
       setHasData(true);
-      // In a real app, this would process the PDFs and update state
+      setIsProcessing(false);
+
+      // Show success notification
       toast({
-        title: 'Processing Complete',
-        description: `Successfully processed ${files.length} invoice(s). Demo data is displayed.`,
+        title: 'Procesare Finalizată',
+        description: `Au fost procesate ${processingSummary.successfulFiles} din ${processingSummary.totalFiles} fișiere cu succes.`,
       });
-    }, 2000);
+    } catch (error) {
+      setIsProcessing(false);
+      toast({
+        title: 'Eroare la Procesare',
+        description: 'A apărut o eroare la procesarea facturilor.',
+        variant: 'destructive',
+      });
+    }
   }, [toast]);
 
-  const handleExport = useCallback(() => {
+  const handleExport = useCallback(async () => {
     try {
-      const fileName = exportToExcel(invoices, analysis, 'SC_EXEMPLU_INDUSTRIES');
+      const fileName = await exportToExcel(invoices, analysis, 'SC_EXEMPLU_INDUSTRIES');
       toast({
-        title: 'Export Successful',
-        description: `Downloaded ${fileName}`,
+        title: 'Export Reușit',
+        description: `Descărcat ${fileName}`,
       });
     } catch (error) {
       toast({
-        title: 'Export Failed',
-        description: 'An error occurred while exporting the data.',
+        title: 'Export Eșuat',
+        description: 'A apărut o eroare la exportarea datelor.',
         variant: 'destructive',
       });
     }
@@ -78,13 +138,13 @@ const Index = () => {
 
             {/* Export Button */}
             <section className="flex justify-end">
-              <Button 
+              <Button
                 onClick={handleExport}
                 className="gap-2 shadow-md hover:shadow-lg transition-shadow"
                 size="lg"
               >
                 <Download className="h-5 w-5" />
-                Export to Excel
+                Exportă în Excel
                 <FileSpreadsheet className="h-5 w-5" />
               </Button>
             </section>
@@ -121,10 +181,10 @@ const Index = () => {
             <div className="bg-muted/50 rounded-2xl p-12 max-w-2xl mx-auto">
               <FileSpreadsheet className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
               <h2 className="text-xl font-semibold text-foreground mb-2">
-                No Invoice Data Yet
+                Încă Nu Există Date Facturi
               </h2>
               <p className="text-muted-foreground">
-                Upload PDF invoices to extract data and generate reports.
+                Încărcați facturi PDF pentru a extrage date și genera rapoarte.
               </p>
             </div>
           </section>
@@ -134,8 +194,8 @@ const Index = () => {
       {/* Footer */}
       <footer className="border-t border-border mt-12 py-6">
         <div className="container mx-auto px-4 text-center text-sm text-muted-foreground">
-          <p>Invoice Data Extractor • Electricity Invoice Processing & Analysis</p>
-          <p className="mt-1">Supports Premier Energy, CEZ, E-Distribuție and more</p>
+          <p>Extractor Date Facturi • Procesare și Analiză Facturi Energie Electrică</p>
+          <p className="mt-1">Suportă Premier Energy, CEZ, E-Distribuție și altele</p>
         </div>
       </footer>
     </div>

@@ -41,7 +41,10 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
       inv.supplier.toLowerCase().includes(term) ||
       inv.invoiceNumber.toLowerCase().includes(term) ||
       inv.clientName.toLowerCase().includes(term) ||
-      inv.nlcCode.toLowerCase().includes(term)
+      inv.locationName.toLowerCase().includes(term) ||
+      inv.address.toLowerCase().includes(term) ||
+      inv.nlcCode.toLowerCase().includes(term) ||
+      inv.podCode.toLowerCase().includes(term)
     );
   });
 
@@ -105,7 +108,7 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
             <div className="relative">
               <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search invoices..."
+                placeholder="Caută facturi..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-9 w-64"
@@ -119,14 +122,16 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/30">
-                <SortHeader label="File Name" sortKeyName="fileName" />
-                <SortHeader label="Supplier" sortKeyName="supplier" />
-                <SortHeader label="Invoice No." sortKeyName="invoiceNumber" />
-                <SortHeader label="Issue Date" sortKeyName="issueDate" />
+                <SortHeader label="Nume Fișier" sortKeyName="fileName" />
+                <SortHeader label="Furnizor" sortKeyName="supplier" />
+                <SortHeader label="Nr. Factură" sortKeyName="invoiceNumber" />
+                <SortHeader label="Data Emisă" sortKeyName="issueDate" />
                 <SortHeader label="Client" sortKeyName="clientName" />
-                <SortHeader label="Location" sortKeyName="locationName" />
-                <SortHeader label="NLC Code" sortKeyName="nlcCode" />
-                <SortHeader label="Period" sortKeyName="startDate" />
+                <SortHeader label="Locație" sortKeyName="locationName" />
+                <SortHeader label="Adresa" sortKeyName="address" />
+                <SortHeader label="Cod NLC" sortKeyName="nlcCode" />
+                <SortHeader label="Cod POD" sortKeyName="podCode" />
+                <SortHeader label="Perioada de facturare" sortKeyName="startDate" />
                 <SortHeader label="kWh" sortKeyName="consumptionKwh" />
                 <SortHeader label="Total (RON)" sortKeyName="totalPayment" />
                 <SortHeader label="Status" sortKeyName="status" />
@@ -150,17 +155,25 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
                   <TableCell className="max-w-[150px] truncate" title={invoice.locationName}>
                     {invoice.locationName || '-'}
                   </TableCell>
+                  <TableCell className="max-w-[200px] truncate" title={invoice.address}>
+                    {invoice.address || '-'}
+                  </TableCell>
                   <TableCell className="font-mono text-sm">{invoice.nlcCode || '-'}</TableCell>
+                  <TableCell className="font-mono text-xs">{invoice.podCode || '-'}</TableCell>
                   <TableCell className="text-sm whitespace-nowrap">
-                    {invoice.startDate && invoice.endDate 
-                      ? `${invoice.startDate} → ${invoice.endDate}` 
+                    {invoice.startDate && invoice.endDate
+                      ? `${invoice.startDate} → ${invoice.endDate}`
                       : '-'}
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">
-                    {invoice.consumptionKwh > 0 ? formatNumber(invoice.consumptionKwh) : '-'}
+                    {invoice.consumptionKwh !== null && invoice.consumptionKwh !== undefined
+                      ? formatNumber(invoice.consumptionKwh)
+                      : '-'}
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">
-                    {invoice.totalPayment > 0 ? formatCurrency(invoice.totalPayment) : '-'}
+                    {invoice.totalPayment !== null && invoice.totalPayment !== undefined
+                      ? formatCurrency(invoice.totalPayment)
+                      : '-'}
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={invoice.status} />
@@ -169,8 +182,8 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
               ))}
               {sortedInvoices.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center py-8 text-muted-foreground">
-                    No invoices found matching your search.
+                  <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
+                    Nu s-au găsit facturi care să corespundă căutării.
                   </TableCell>
                 </TableRow>
               )}
