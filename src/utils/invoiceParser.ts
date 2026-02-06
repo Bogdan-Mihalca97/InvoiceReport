@@ -287,19 +287,26 @@ function extractElectricaAddress(text: string, isSingleNlc: boolean = false): st
  */
 function extractElectricaConsumption(text: string): { value: number; sourceLine: string } {
   const patterns = [
-    { pattern: /Total[\s]+loc[\s]+de[\s]+consum[\s:]*(-?[0-9,.]+)[\s]*kWh/i, label: 'Total loc de consum' },
-    { pattern: /Total[\s]+energie[\s]+activ[aă][\s:]*(-?[0-9,.]+)[\s]*kWh/i, label: 'Total energie activă' },
-    { pattern: /energie[\s]+activ[aă][\s:]*(-?[0-9,.]+)[\s]*kWh/i, label: 'Energie activă' },
-    { pattern: /Cantitate[\s]+facturată[\s:]*(-?[0-9,.]+)[\s]*kWh/i, label: 'Cantitate facturată' },
-    { pattern: /(?:consum|cantitate)[\s:]*(-?[0-9,.]+)[\s]*(?:kWh|kwh)/i, label: 'Consum' },
+    /Total[\s]+loc[\s]+de[\s]+consum[\s:]*(-?[0-9,.]+)[\s]*kWh/i,
+    /Total[\s]+energie[\s]+activ[aă][\s:]*(-?[0-9,.]+)[\s]*kWh/i,
+    // Table format: "Total energie activă" | 42 | kWh  (number and kWh in separate columns)
+    /Total[\s]+energie[\s]+activ[aă]\s+(\d+)\s+kWh/i,
+    /energie[\s]+activ[aă][\s:]*(-?[0-9,.]+)[\s]*kWh/i,
+    // DETALII CITIRI table: "Energie activă" row with Cantitate column
+    /Energie[\s]+activ[aă][^\n]*?Cantitate[\s:]+(-?[0-9,.]+)/i,
+    /Cantitate[\s]+facturată[\s:]*(-?[0-9,.]+)[\s]*kWh/i,
+    // "Total loc de consum" row in the detailed table with kWh value
+    /Total[\s]+loc[\s]+de[\s]+consum\s+(\d+)\s+kWh/i,
+    /(?:consum|cantitate)[\s:]*(-?[0-9,.]+)[\s]*(?:kWh|kwh)/i,
   ];
 
-  for (const { pattern, label } of patterns) {
+  for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match) {
       const num = parseRomanianNumber(match[1]);
       if (!isNaN(num) && Math.abs(num) < 10000000) {
-        return { value: Math.round(num), sourceLine: label };
+        console.log(`Consumption found: ${num} kWh`);
+        return { value: Math.round(num), sourceLine: 'Energie activă' };
       }
     }
   }
@@ -379,37 +386,60 @@ function extractElectricaBillingPeriod(text: string): { startDate: string; endDa
 
 /**
  * Extracts the text section relevant to a specific NLC code (ELECTRICA)
+ * Includes continuation pages (tables that span multiple pages)
  */
 function extractNlcSection(text: string, nlcCode: string, skipFirstPage: boolean = false): string {
+  // Strategy 1: Use "DETALII LOC DE CONSUM" sections (best for multi-NLC)
+  // This captures everything between two section headers, regardless of page breaks
+  const detailsPattern = /DETALII\s+LOC\s+DE\s+CONSUM/gi;
+  const detailsMatches = [...text.matchAll(detailsPattern)];
+
+  for (let i = 0; i < detailsMatches.length; i++) {
+    const matchStart = detailsMatches[i].index!;
+    const matchEnd = i < detailsMatches.length - 1 ? detailsMatches[i + 1].index! : text.length;
+    const section = text.substring(matchStart, matchEnd);
+
+    if (section.includes(nlcCode)) {
+      console.log(`NLC ${nlcCode}: found in DETALII section (${section.length} chars)`);
+      return section;
+    }
+  }
+
+  // Strategy 2: Page-based - find the page with the NLC and include subsequent pages
+  // until the next NLC/DETALII section starts
   const pages = text.split(/---\s*PAGE\s*BREAK\s*---/i);
   const startIndex = skipFirstPage ? 1 : 0;
 
   for (let i = startIndex; i < pages.length; i++) {
     if (pages[i].includes(nlcCode)) {
-      return pages[i];
+      // Found the NLC on this page - now include continuation pages
+      let section = pages[i];
+
+      // Add subsequent pages that DON'T start a new NLC section
+      for (let j = i + 1; j < pages.length; j++) {
+        const nextPage = pages[j];
+        // Stop if next page has a new "DETALII LOC DE CONSUM" or a different NLC code
+        if (/DETALII\s+LOC\s+DE\s+CONSUM/i.test(nextPage) ||
+            /COD\s+Loc\s+de\s+consum\s*\(NLC\)/i.test(nextPage)) {
+          break;
+        }
+        // Include this continuation page (it's part of the same NLC's data)
+        section += '\n' + nextPage;
+      }
+
+      console.log(`NLC ${nlcCode}: found on page ${i}, section ${section.length} chars`);
+      return section;
     }
   }
 
+  // Fallback: extract around the code
   const nlcIndex = text.indexOf(nlcCode);
   if (nlcIndex === -1) {
     return text;
   }
 
-  const detailsPattern = /DETALII\s+LOC\s+DE\s+CONSUM/gi;
-  const matches = [...text.matchAll(detailsPattern)];
-
-  for (let i = 0; i < matches.length; i++) {
-    const matchStart = matches[i].index!;
-    const matchEnd = i < matches.length - 1 ? matches[i + 1].index! : text.length;
-    const section = text.substring(matchStart, matchEnd);
-
-    if (section.includes(nlcCode)) {
-      return section;
-    }
-  }
-
   const start = Math.max(0, nlcIndex - 500);
-  const end = Math.min(text.length, nlcIndex + 2500);
+  const end = Math.min(text.length, nlcIndex + 5000);
   return text.substring(start, end);
 }
 
@@ -804,7 +834,7 @@ function extractPPCConsumption(text: string): { value: number; sourceLine: strin
     if (match) {
       const num = parseRomanianNumber(match[1]);
       if (!isNaN(num) && Math.abs(num) < 10000000) {
-        return { value: Math.round(num), sourceLine: 'Consum energie activă' };
+        return { value: Math.round(num), sourceLine: 'Energie activă' };
       }
     }
   }
@@ -1021,12 +1051,18 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
   // Find all NLC codes
   const pages = text.split(/---\s*PAGE\s*BREAK\s*---/i);
   const allNlcCodes = extractAllNlcCodes(text);
-  const shouldSkipFirstPage = allNlcCodes.length > 1;
-  const textForExtraction = shouldSkipFirstPage && pages.length > 1
+
+  // Check if the invoice has "DETALII LOC DE CONSUM" sections (detail pages)
+  const hasDetailSections = /DETALII\s+LOC\s+DE\s+CONSUM/i.test(text);
+
+  // For multi-NLC invoices OR invoices with DETALII sections, skip page 1
+  // Page 1 is the summary and may contain a general NLC + total kWh that would be wrong
+  const shouldSkipFirstPage = (allNlcCodes.length > 1 || hasDetailSections) && pages.length > 1;
+  const textWithoutFirstPage = shouldSkipFirstPage
     ? pages.slice(1).join('\n\n--- PAGE BREAK ---\n\n')
     : text;
   const nlcCodes = shouldSkipFirstPage
-    ? extractAllNlcCodes(textForExtraction)
+    ? extractAllNlcCodes(textWithoutFirstPage)
     : allNlcCodes;
 
   console.log('Extracted common fields:', {
@@ -1037,9 +1073,11 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
     totalPayment,
     billingPeriod,
     nlcCodesFound: nlcCodes.length,
+    hasDetailSections,
+    shouldSkipFirstPage,
   });
 
-  // If no NLC codes found, create a single record
+  // If no NLC codes found, create a single record using full text
   if (nlcCodes.length === 0) {
     const locationName = extractElectricaLocationName(text);
     const nlcCode = extractNlcCode(text);
@@ -1059,14 +1097,23 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
 
   // Create a record for each NLC code
   const records: InvoiceRecord[] = [];
-  const skipFirstPage = nlcCodes.length > 1;
 
   for (const nlcCode of nlcCodes) {
-    const nlcSection = extractNlcSection(text, nlcCode, skipFirstPage);
+    // Always use the text without the first page for section extraction
+    // This prevents picking up summary/total values from page 1 or TOTAL FACTURARE page
+    const nlcSection = extractNlcSection(textWithoutFirstPage, nlcCode, false);
     const locationName = extractElectricaLocationName(nlcSection);
     const podCode = extractElectricaPodCode(nlcSection);
     const address = extractElectricaAddress(nlcSection);
     const consumption = extractElectricaConsumption(nlcSection);
+
+    console.log(`NLC ${nlcCode}:`, {
+      locationName,
+      podCode,
+      address: address.substring(0, 50),
+      consumption: consumption.value,
+      consumptionSource: consumption.sourceLine,
+    });
 
     const record = createInvoiceRecord(
       fileName, supplier, invoiceNumber, issueDate, clientName,
