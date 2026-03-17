@@ -132,8 +132,9 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
                 <SortHeader label="Cod NLC" sortKeyName="nlcCode" />
                 <SortHeader label="Cod POD" sortKeyName="podCode" />
                 <SortHeader label="Perioada de facturare" sortKeyName="startDate" />
-                <SortHeader label="kWh" sortKeyName="consumptionKwh" />
+                <SortHeader label="Consum" sortKeyName="consumptionKwh" />
                 <SortHeader label="Total (RON)" sortKeyName="totalPayment" />
+                <SortHeader label="Sold (RON)" sortKeyName="soldTotal" />
                 <SortHeader label="Status" sortKeyName="status" />
               </TableRow>
             </TableHeader>
@@ -167,13 +168,16 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">
                     {invoice.consumptionKwh !== null && invoice.consumptionKwh !== undefined
-                      ? formatNumber(invoice.consumptionKwh)
+                      ? `${formatNumber(invoice.consumptionKwh)} ${invoice.consumptionUnit ?? 'kWh'}`
                       : '-'}
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">
                     {invoice.totalPayment !== null && invoice.totalPayment !== undefined
                       ? formatCurrency(invoice.totalPayment)
                       : '-'}
+                  </TableCell>
+                  <TableCell className={`text-right font-semibold tabular-nums${invoice.soldTotal > 0 ? ' text-destructive' : ''}`}>
+                    {invoice.soldTotal ? formatCurrency(invoice.soldTotal) : '-'}
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={invoice.status} />
@@ -182,7 +186,7 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
               ))}
               {sortedInvoices.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={14} className="text-center py-8 text-muted-foreground">
                     Nu s-au găsit facturi care să corespundă căutării.
                   </TableCell>
                 </TableRow>

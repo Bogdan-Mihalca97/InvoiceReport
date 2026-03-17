@@ -4,7 +4,7 @@ import { InvoiceRecord, MonthlyAnalysis, ProcessingSummary } from '@/types/invoi
  * Generates monthly analysis from invoice records
  */
 export function generateMonthlyAnalysis(invoices: InvoiceRecord[]): MonthlyAnalysis[] {
-  const nlcMap = new Map<string, { locationName: string; monthlyData: Record<string, number> }>();
+  const nlcMap = new Map<string, { locationName: string; consumptionUnit: 'kWh' | 'MWh'; monthlyData: Record<string, number> }>();
 
   invoices
     .filter((inv) => inv.status === 'OK' && inv.endDate)
@@ -14,6 +14,7 @@ export function generateMonthlyAnalysis(invoices: InvoiceRecord[]): MonthlyAnaly
       if (!nlcMap.has(invoice.nlcCode)) {
         nlcMap.set(invoice.nlcCode, {
           locationName: invoice.locationName,
+          consumptionUnit: invoice.consumptionUnit ?? 'kWh',
           monthlyData: {},
         });
       }
@@ -25,11 +26,12 @@ export function generateMonthlyAnalysis(invoices: InvoiceRecord[]): MonthlyAnaly
   return Array.from(nlcMap.entries()).map(([nlcCode, data]) => {
     const values = Object.values(data.monthlyData);
     const totalYear = values.reduce((sum, val) => sum + val, 0);
-    const monthlyAverage = values.length > 0 ? Math.round(totalYear / values.length) : 0;
+    const monthlyAverage = values.length > 0 ? totalYear / values.length : 0;
 
     return {
       nlcCode,
       locationName: data.locationName,
+      consumptionUnit: data.consumptionUnit,
       monthlyData: data.monthlyData,
       totalYear,
       monthlyAverage,

@@ -30,9 +30,10 @@ export const exportToExcel = async (
     { header: 'Adresă', key: 'address', width: 40 },
     { header: 'Data Start', key: 'startDate', width: 12 },
     { header: 'Data End', key: 'endDate', width: 12 },
-    { header: 'Consum (kWh)', key: 'consumptionKwh', width: 14 },
+    { header: 'Consum', key: 'consumptionKwh', width: 14 },
     { header: 'Sursa Linie', key: 'sourceLine', width: 25 },
     { header: 'Total Plată (RON)', key: 'totalPayment', width: 18 },
+    { header: 'Sold (RON)', key: 'soldTotal', width: 18 },
     { header: 'Data Procesării', key: 'processingDate', width: 15 },
     { header: 'Link Document', key: 'documentLink', width: 30 },
     { header: 'Status', key: 'status', width: 12 },
@@ -81,9 +82,10 @@ export const exportToExcel = async (
       address: inv.address,
       startDate: inv.startDate,
       endDate: inv.endDate,
-      consumptionKwh: inv.consumptionKwh,
+      consumptionKwh: `${inv.consumptionKwh} ${inv.consumptionUnit ?? 'kWh'}`,
       sourceLine: inv.sourceLine,
       totalPayment: inv.totalPayment,
+      soldTotal: inv.soldTotal || 0,
       processingDate: inv.processingDate,
       documentLink: inv.documentLink || '',
       status: inv.status,
@@ -91,10 +93,9 @@ export const exportToExcel = async (
     });
 
     // Apply number formats to specific columns
-    // kWh - number with 0 decimals
-    row.getCell('consumptionKwh').numFmt = '#,##0';
     // RON - number with 2 decimals
     row.getCell('totalPayment').numFmt = '#,##0.00';
+    row.getCell('soldTotal').numFmt = '#,##0.00';
 
     // Wrap text for observations
     row.getCell('observations').alignment = { wrapText: true, vertical: 'top' };
@@ -104,7 +105,7 @@ export const exportToExcel = async (
   if (invoices.length > 0) {
     wsInvoices.autoFilter = {
       from: { row: 1, column: 1 },
-      to: { row: invoices.length + 1, column: 18 },
+      to: { row: invoices.length + 1, column: 19 },
     };
   }
 
