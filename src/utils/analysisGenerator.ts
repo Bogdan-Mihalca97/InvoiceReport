@@ -7,7 +7,7 @@ export function generateMonthlyAnalysis(invoices: InvoiceRecord[]): MonthlyAnaly
   const nlcMap = new Map<string, { locationName: string; consumptionUnit: 'kWh' | 'MWh'; monthlyData: Record<string, number> }>();
 
   invoices
-    .filter((inv) => inv.status === 'OK' && inv.endDate)
+    .filter((inv) => inv.status !== 'ERROR' && inv.nlcCode && inv.endDate)
     .forEach((invoice) => {
       const month = invoice.endDate.substring(0, 7); // YYYY-MM
 

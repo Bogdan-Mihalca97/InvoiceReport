@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Download, FileSpreadsheet, BarChart3, Table2 } from 'lucide-react';
+import { Download, FileSpreadsheet, BarChart3, Table2, Eye, EyeOff } from 'lucide-react';
 import Header from '@/components/Header';
 import FileUploadZone from '@/components/FileUploadZone';
 import ProcessingSummaryCard from '@/components/ProcessingSummaryCard';
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { exportToExcel } from '@/utils/excelExport';
+import { importFromExcel, dedupKey } from '@/utils/excelImport';
 import { InvoiceRecord, MonthlyAnalysis, ProcessingSummary } from '@/types/invoice';
 import { extractTextFromPDF } from '@/utils/pdfExtractor';
 import { parseInvoiceText } from '@/utils/invoiceParser';
@@ -17,6 +18,9 @@ import { generateMonthlyAnalysis, generateProcessingSummary } from '@/utils/anal
 const Index = () => {
   const { toast } = useToast();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [claudeApiKey, setClaudeApiKey] = useState(() => localStorage.getItem('claude_api_key') ?? '');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [hasData, setHasData] = useState(false);
   const [invoices, setInvoices] = useState<InvoiceRecord[]>([]);
   const [analysis, setAnalysis] = useState<MonthlyAnalysis[]>([]);
@@ -30,76 +34,111 @@ const Index = () => {
 
   const handleFilesSelected = useCallback(async (files: FileList) => {
     setIsProcessing(true);
+    const fileArray = Array.from(files).filter(f => f.type === 'application/pdf');
+    let completed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    setProgress({ current: 0, total: fileArray.length });
 
-    try {
-      const processedInvoices: InvoiceRecord[] = [];
-      const fileArray = Array.from(files);
+    // Streams records into the table as each file finishes.
+    // dedupKey = invoiceNumber|POD/NLC, so the same NLC across different invoices
+    // (different invoice numbers) is kept — only exact re-uploads are skipped.
+    const addRecords = (newRecords: InvoiceRecord[]) => {
+      setInvoices(prev => {
+        const existingKeys = new Set(prev.map(dedupKey));
+        const toAdd = newRecords.filter(r => !existingKeys.has(dedupKey(r)));
+        if (toAdd.length === 0) return prev;
+        const merged = [...prev, ...toAdd];
+        setAnalysis(generateMonthlyAnalysis(merged));
+        setSummary(generateProcessingSummary(merged));
+        setHasData(true);
+        return merged;
+      });
+    };
 
-      // Process each PDF file
-      for (const file of fileArray) {
-        if (file.type === 'application/pdf') {
-          try {
-            // Extract text from PDF
-            const text = await extractTextFromPDF(file);
-
-            // Parse the text to extract invoice data (returns array of records, one per NLC)
-            const invoiceRecords = parseInvoiceText(text, file.name);
-            processedInvoices.push(...invoiceRecords);
-          } catch (error) {
-            console.error(`Error processing ${file.name}:`, error);
-            // Add error record for failed file
-            processedInvoices.push({
-              id: Math.random().toString(36).substring(7),
-              fileName: file.name,
-              supplier: 'NECUNOSCUT',
-              invoiceNumber: '',
-              issueDate: '',
-              clientName: '',
-              locationName: '',
-              nlcCode: '',
-              podCode: '',
-              address: '',
-              startDate: '',
-              endDate: '',
-              consumptionKwh: 0,
-              consumptionUnit: 'kWh' as const,
-              sourceLine: '',
-              totalPayment: 0,
-              soldTotal: 0,
-              processingDate: new Date().toISOString().split('T')[0],
-              documentLink: '',
-              status: 'ERROR',
-              observations: `Eroare la procesare: ${error instanceof Error ? error.message : 'Eroare necunoscută'}`,
-            });
-          }
-        }
+    // Sequential processing: PDF.js uses a shared worker — concurrent document
+    // loads interfere and cause "Invalid page request" errors.
+    for (const file of fileArray) {
+      try {
+        const text = await extractTextFromPDF(file, claudeApiKey || undefined);
+        const records = parseInvoiceText(text, file.name);
+        addRecords(records);
+        succeeded++;
+      } catch (error) {
+        console.error(`Error processing ${file.name}:`, error);
+        addRecords([{
+          id: Math.random().toString(36).substring(7),
+          fileName: file.name,
+          supplier: 'NECUNOSCUT',
+          invoiceNumber: '',
+          issueDate: '',
+          clientName: '',
+          locationName: '',
+          nlcCode: '',
+          podCode: '',
+          address: '',
+          startDate: '',
+          endDate: '',
+          consumptionKwh: 0,
+          consumptionUnit: 'kWh' as const,
+          sourceLine: '',
+          totalPayment: 0,
+          soldTotal: 0,
+          processingDate: new Date().toISOString().split('T')[0],
+          documentLink: '',
+          status: 'ERROR',
+          observations: `Eroare la procesare: ${error instanceof Error ? error.message : 'Eroare necunoscută'}`,
+        }]);
+        failed++;
+      } finally {
+        setProgress(p => ({ ...p, current: ++completed }));
       }
+    }
 
-      // Generate analysis and summary
-      const monthlyAnalysis = generateMonthlyAnalysis(processedInvoices);
-      const processingSummary = generateProcessingSummary(processedInvoices);
+    setIsProcessing(false);
+    toast({
+      title: 'Procesare Finalizată',
+      description: `${succeeded} fișiere procesate cu succes${failed ? `, ${failed} cu erori` : ''}.`,
+    });
+  }, [toast, claudeApiKey]);
 
-      // Update state
-      setInvoices(processedInvoices);
-      setAnalysis(monthlyAnalysis);
-      setSummary(processingSummary);
-      setHasData(true);
-      setIsProcessing(false);
-
-      // Show success notification
-      toast({
-        title: 'Procesare Finalizată',
-        description: `Au fost procesate ${processingSummary.successfulFiles} din ${processingSummary.totalFiles} fișiere cu succes.`,
+  const handleImportExcel = useCallback(async (file: File) => {
+    if (!file) return;
+    try {
+      const imported = await importFromExcel(file);
+      setInvoices(prev => {
+        const existingKeys = new Set(prev.map(dedupKey));
+        const newRecords = imported.filter(r => !existingKeys.has(dedupKey(r)));
+        const merged = [...prev, ...newRecords];
+        setAnalysis(generateMonthlyAnalysis(merged));
+        setSummary(generateProcessingSummary(merged));
+        setHasData(true);
+        return merged;
       });
+      toast({ title: 'Import Reușit', description: `${imported.length} înregistrări importate din Excel.` });
     } catch (error) {
-      setIsProcessing(false);
-      toast({
-        title: 'Eroare la Procesare',
-        description: 'A apărut o eroare la procesarea facturilor.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Import Eșuat', description: error instanceof Error ? error.message : 'Eroare necunoscută.', variant: 'destructive' });
     }
   }, [toast]);
+
+  const handleUpdateInvoice = useCallback((id: string, consumptionKwh: number) => {
+    setInvoices(prev => {
+      const updated = prev.map(r => r.id === id ? { ...r, consumptionKwh } : r);
+      setAnalysis(generateMonthlyAnalysis(updated));
+      setSummary(generateProcessingSummary(updated));
+      return updated;
+    });
+  }, []);
+
+  const handleDeleteInvoice = useCallback((id: string) => {
+    setInvoices(prev => {
+      const updated = prev.filter(r => r.id !== id);
+      setAnalysis(generateMonthlyAnalysis(updated));
+      setSummary(generateProcessingSummary(updated));
+      if (updated.length === 0) setHasData(false);
+      return updated;
+    });
+  }, []);
 
   const handleExport = useCallback(async () => {
     try {
@@ -122,12 +161,45 @@ const Index = () => {
       <Header />
       
       <main className="container mx-auto px-4 py-8 space-y-8">
+        {/* Claude API Key (optional — enables Claude Vision OCR for scanned PDFs) */}
+        <section>
+          <div className="flex items-center gap-2 max-w-md">
+            <div className="relative flex-1">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                placeholder="Claude API key (opțional — OCR mai rapid pentru PDF scanate)"
+                value={claudeApiKey}
+                onChange={e => {
+                  setClaudeApiKey(e.target.value);
+                  if (e.target.value) localStorage.setItem('claude_api_key', e.target.value);
+                  else localStorage.removeItem('claude_api_key');
+                }}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm pr-9 focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(v => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label={showApiKey ? 'Ascunde cheia' : 'Afișează cheia'}
+              >
+                {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* Upload Section */}
         <section>
-          <FileUploadZone 
-            onFilesSelected={handleFilesSelected} 
-            isProcessing={isProcessing} 
+          <FileUploadZone
+            onFilesSelected={handleFilesSelected}
+            isProcessing={isProcessing}
+            onImportExcel={handleImportExcel}
           />
+          {isProcessing && progress.total > 0 && (
+            <p className="mt-3 text-sm text-muted-foreground text-center">
+              Se procesează fișierul {progress.current} din {progress.total}…
+            </p>
+          )}
         </section>
 
         {/* Results Section */}
@@ -139,7 +211,7 @@ const Index = () => {
             </section>
 
             {/* Export Button */}
-            <section className="flex justify-end">
+            <section className="flex justify-end gap-2">
               <Button
                 onClick={handleExport}
                 className="gap-2 shadow-md hover:shadow-lg transition-shadow"
@@ -166,7 +238,7 @@ const Index = () => {
                 </TabsList>
                 
                 <TabsContent value="invoices" className="animate-fade-in">
-                  <InvoiceDataTable invoices={invoices} />
+                  <InvoiceDataTable invoices={invoices} onUpdate={handleUpdateInvoice} onDelete={handleDeleteInvoice} />
                 </TabsContent>
                 
                 <TabsContent value="analysis" className="animate-fade-in">

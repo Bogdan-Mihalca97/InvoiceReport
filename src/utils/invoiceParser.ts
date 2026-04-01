@@ -115,6 +115,8 @@ function parseRomanianNumber(value: string): number {
  */
 function extractElectricaInvoiceNumber(text: string): string {
   const patterns = [
+    // EFI format: "Numarul facturii : EFI2437541971"
+    /Numarul[\s]+facturii[\s:]+([A-Z]{2,5}[0-9]{5,})/i,
     /Serie[\s\/]+Nr\.?[\s:]*([A-Z0-9\/\-]{5,})/i,
     /ID[\s]+factur[aă][\s:]*([A-Z0-9\/\-]{5,})/i,
     /nr\.?\s*factur[aă][\s:]*([A-Z0-9\-\/]{5,})/i,
@@ -369,6 +371,7 @@ function extractElectricaTotalPayment(text: string): number {
  */
 function extractElectricaBillingPeriod(text: string): { startDate: string; endDate: string } {
   const billingPatterns = [
+    // dot-separated (standard)
     /Perioad[aă][\s]+de[\s]+facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s\-–]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
     /Period[aă][\s]+de[\s]+facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s\-–]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
     /facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s\-–]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
@@ -381,14 +384,25 @@ function extractElectricaBillingPeriod(text: string): { startDate: string; endDa
       const startDay = match[1].padStart(2, '0');
       const startMonth = match[2].padStart(2, '0');
       const startYear = match[3];
-      const endDay = match[4].padStart(2, '0');
-      const endMonth = match[5].padStart(2, '0');
-      const endYear = match[6];
+      const endDay = (match[4] ?? '').padStart(2, '0');
+      const endMonth = (match[5] ?? '').padStart(2, '0');
+      const endYear = match[6] ?? '';
       return {
         startDate: `${startYear}-${startMonth}-${startDay}`,
-        endDate: `${endYear}-${endMonth}-${endDay}`,
+        endDate: endYear ? `${endYear}-${endMonth}-${endDay}` : '',
       };
     }
+  }
+
+  // EFI format: start and end on separate labelled lines with slashes
+  const efiStart = text.match(/Data\s+de\s+inceput\s+a\s+perioadei\s+de\s+facturare[\s:]+([0-9]{1,2})\/([0-9]{1,2})\/([0-9]{4})/i);
+  const efiEnd   = text.match(/Data\s+de\s+sfarsit\s+a\s+perioadei\s+de\s+facturare[\s:]+([0-9]{1,2})\/([0-9]{1,2})\/([0-9]{4})/i);
+  if (efiStart) {
+    const fmt = (d: string, m: string, y: string) => `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    return {
+      startDate: fmt(efiStart[1], efiStart[2], efiStart[3]),
+      endDate: efiEnd ? fmt(efiEnd[1], efiEnd[2], efiEnd[3]) : '',
+    };
   }
 
   return { startDate: '', endDate: '' };
@@ -442,15 +456,30 @@ function extractNlcSection(text: string, nlcCode: string, skipFirstPage: boolean
     }
   }
 
-  // Fallback: extract around the code
-  const nlcIndex = text.indexOf(nlcCode);
-  if (nlcIndex === -1) {
-    return text;
+  // Strategy 3: Row-bounded extraction — for tabular formats where multiple NLC codes
+  // appear on the same page (no DETALII headers, no per-NLC pages).
+  // Extract from the NLC code occurrence to just before the next NLC code occurrence.
+  const nlcPattern = /\b(\d{10,12})\b/g;
+  const allNlcOccurrences: Array<{ index: number; code: string }> = [];
+  let nlcMatch: RegExpExecArray | null;
+  while ((nlcMatch = nlcPattern.exec(text)) !== null) {
+    allNlcOccurrences.push({ index: nlcMatch.index, code: nlcMatch[1] });
   }
 
-  const start = Math.max(0, nlcIndex - 500);
-  const end = Math.min(text.length, nlcIndex + 5000);
-  return text.substring(start, end);
+  const thisOccurrence = allNlcOccurrences.find(o => o.code === nlcCode);
+  if (thisOccurrence) {
+    // Find the next occurrence that is a DIFFERENT code
+    const nextOther = allNlcOccurrences.find(o => o.index > thisOccurrence.index && o.code !== nlcCode);
+    const sectionStart = Math.max(0, thisOccurrence.index - 500);
+    const sectionEnd = nextOther ? nextOther.index : Math.min(text.length, thisOccurrence.index + 3000);
+    const section = text.substring(sectionStart, sectionEnd);
+    console.log(`NLC ${nlcCode}: strategy 3 row-bounded section (${section.length} chars)`);
+    console.log(`NLC ${nlcCode} section preview:`, section.substring(0, 300));
+    return section;
+  }
+
+  console.log(`NLC ${nlcCode}: fallback — returning full text`);
+  return text;
 }
 
 // ============================================================
@@ -1493,6 +1522,14 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
   const invoiceNumber = extractElectricaInvoiceNumber(text);
   let issueDate = extractDate(text, '(?:data[\\s]+emiterii|data[\\s]+emitere|emis[aă]|dat[aă])');
 
+  // EFI format: "Data facturii : 31.12.2024"
+  if (!issueDate) {
+    const efiDateMatch = text.match(/Data\s+facturii[\s:]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i);
+    if (efiDateMatch) {
+      issueDate = `${efiDateMatch[3]}-${efiDateMatch[2].padStart(2,'0')}-${efiDateMatch[1].padStart(2,'0')}`;
+    }
+  }
+
   if (!issueDate) {
     const serieMatch = text.match(/Serie[\s\/]+Nr\.?[\s:]*[A-Z0-9\/\-]{5,}[\s\S]{0,200}?([0-9]{1,2})[\.]([0-9]{1,2})[\.]([0-9]{4})/i);
     if (serieMatch) {
@@ -1509,16 +1546,32 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
 
   // Find all NLC codes
   const pages = text.split(/---\s*PAGE\s*BREAK\s*---/i);
+
+  // EFI preamble detection: pages that have an EFI invoice number header but no NLC/DETALII content
+  // are financial attachments — skip them and start from the first page with real invoice content.
+  const isEfiPreamblePage = (p: string) =>
+    /Numarul\s+facturii[\s:]+EFI\d+/i.test(p) &&
+    !extractAllNlcCodes(p).length &&
+    !/DETALII\s+LOC\s+DE\s+CONSUM/i.test(p);
+
+  let preamblePageCount = 0;
+  while (preamblePageCount < pages.length && isEfiPreamblePage(pages[preamblePageCount])) {
+    preamblePageCount++;
+  }
+  if (preamblePageCount > 0) {
+    console.log(`EFI preamble: skipping first ${preamblePageCount} page(s)`);
+  }
+
   const allNlcCodes = extractAllNlcCodes(text);
 
   // Check if the invoice has "DETALII LOC DE CONSUM" sections (detail pages)
   const hasDetailSections = /DETALII\s+LOC\s+DE\s+CONSUM/i.test(text);
 
-  // For multi-NLC invoices OR invoices with DETALII sections, skip page 1
-  // Page 1 is the summary and may contain a general NLC + total kWh that would be wrong
-  const shouldSkipFirstPage = (allNlcCodes.length > 1 || hasDetailSections) && pages.length > 1;
+  // Skip preamble pages + page 1 (summary) for multi-NLC or DETALII invoices
+  const pagesToSkip = preamblePageCount + ((allNlcCodes.length > 1 || hasDetailSections) && pages.length > preamblePageCount + 1 ? 1 : 0);
+  const shouldSkipFirstPage = pagesToSkip > 0;
   const textWithoutFirstPage = shouldSkipFirstPage
-    ? pages.slice(1).join('\n\n--- PAGE BREAK ---\n\n')
+    ? pages.slice(pagesToSkip).join('\n\n--- PAGE BREAK ---\n\n')
     : text;
   const nlcCodes = shouldSkipFirstPage
     ? extractAllNlcCodes(textWithoutFirstPage)
@@ -1566,6 +1619,7 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
     const address = extractElectricaAddress(nlcSection);
     const consumption = extractElectricaConsumption(nlcSection);
 
+    console.log(`NLC ${nlcCode} section (first 500 chars):`, nlcSection.substring(0, 500));
     console.log(`NLC ${nlcCode}:`, {
       locationName,
       podCode,
