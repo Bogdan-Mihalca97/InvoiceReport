@@ -14,8 +14,10 @@ export interface InvoiceRecord {
   startDate: string;
   endDate: string;
   consumptionKwh: number;
+  consumptionUnit: 'kWh' | 'MWh';
   sourceLine: string;
   totalPayment: number;
+  soldTotal: number;
   processingDate: string;
   documentLink: string;
   status: 'OK' | 'INCOMPLETE' | 'ERROR';
@@ -25,7 +27,8 @@ export interface InvoiceRecord {
 export interface MonthlyAnalysis {
   nlcCode: string;
   locationName: string;
-  monthlyData: Record<string, number>; // YYYY-MM -> kWh
+  consumptionUnit: 'kWh' | 'MWh';
+  monthlyData: Record<string, number>;
   totalYear: number;
   monthlyAverage: number;
 }

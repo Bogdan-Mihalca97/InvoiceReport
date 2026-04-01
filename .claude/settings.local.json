@@ -4,7 +4,18 @@
       "Bash(npm run build:*)",
       "Bash(npm uninstall:*)",
       "Bash(if exist \"node_modules\\\\.vite\" rmdir /s /q \"node_modules\\\\.vite\")",
-      "Bash(timeout 5 cat:*)"
+      "Bash(timeout 5 cat:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix invoice parsing and add GitHub Pages deployment\n\n- Fix ELECTRICA consumption extraction for single/multi NLC invoices\n- Skip first page \\(summary\\) for multi-NLC to avoid wrong kWh totals\n- Include continuation pages for tables spanning multiple pages\n- Improve PPC location, address, and consumption period extraction\n- Set sourceLine to \"Energie activă\" matching Specificație column\n- Add base path and GitHub Actions workflow for GitHub Pages\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(gh run list:*)",
+      "Bash(where:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix GitHub Pages routing and local dev base path\n\nSet BrowserRouter basename from Vite BASE_URL and only apply\n/InvoiceReport/ base path in production builds.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(head:*)",
+      "Bash(grep:*)"
     ]
   }
 }

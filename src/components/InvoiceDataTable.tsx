@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ChevronDown, ChevronUp, Filter } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { ChevronDown, ChevronUp, Filter, Pencil, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,14 +16,19 @@ import { InvoiceRecord } from '@/types/invoice';
 
 interface InvoiceDataTableProps {
   invoices: InvoiceRecord[];
+  onUpdate?: (id: string, consumptionKwh: number) => void;
+  onDelete?: (id: string) => void;
 }
 
 type SortKey = keyof InvoiceRecord;
 
-const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
+const InvoiceDataTable = ({ invoices, onUpdate, onDelete }: InvoiceDataTableProps) => {
   const [sortKey, setSortKey] = useState<SortKey>('issueDate');
   const [sortAsc, setSortAsc] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -60,6 +65,20 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
     const bStr = String(bVal || '');
     return sortAsc ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
   });
+
+  const startEdit = (invoice: InvoiceRecord) => {
+    setEditingId(invoice.id);
+    setEditValue(String(invoice.consumptionKwh ?? 0));
+    setTimeout(() => editInputRef.current?.select(), 0);
+  };
+
+  const commitEdit = (invoice: InvoiceRecord) => {
+    const parsed = parseFloat(editValue.replace(',', '.'));
+    if (!isNaN(parsed) && parsed !== invoice.consumptionKwh) {
+      onUpdate?.(invoice.id, parsed);
+    }
+    setEditingId(null);
+  };
 
   const StatusBadge = ({ status }: { status: InvoiceRecord['status'] }) => {
     const variants = {
@@ -132,9 +151,11 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
                 <SortHeader label="Cod NLC" sortKeyName="nlcCode" />
                 <SortHeader label="Cod POD" sortKeyName="podCode" />
                 <SortHeader label="Perioada de facturare" sortKeyName="startDate" />
-                <SortHeader label="kWh" sortKeyName="consumptionKwh" />
+                <SortHeader label="Consum" sortKeyName="consumptionKwh" />
                 <SortHeader label="Total (RON)" sortKeyName="totalPayment" />
+                <SortHeader label="Sold (RON)" sortKeyName="soldTotal" />
                 <SortHeader label="Status" sortKeyName="status" />
+                {onDelete && <TableHead className="w-10" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -166,23 +187,67 @@ const InvoiceDataTable = ({ invoices }: InvoiceDataTableProps) => {
                       : '-'}
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">
-                    {invoice.consumptionKwh !== null && invoice.consumptionKwh !== undefined
-                      ? formatNumber(invoice.consumptionKwh)
-                      : '-'}
+                    {editingId === invoice.id ? (
+                      <div className="flex items-center gap-1 justify-end">
+                        <input
+                          ref={editInputRef}
+                          type="number"
+                          step="any"
+                          value={editValue}
+                          onChange={e => setEditValue(e.target.value)}
+                          onBlur={() => commitEdit(invoice)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') commitEdit(invoice);
+                            if (e.key === 'Escape') setEditingId(null);
+                          }}
+                          className="w-24 rounded border border-input bg-background px-2 py-0.5 text-sm text-right focus:outline-none focus:ring-1 focus:ring-ring"
+                        />
+                        <span className="text-xs text-muted-foreground">{invoice.consumptionUnit ?? 'kWh'}</span>
+                      </div>
+                    ) : (
+                      <div
+                        className="flex items-center gap-1 justify-end group cursor-pointer"
+                        onClick={() => onUpdate && startEdit(invoice)}
+                        title={onUpdate ? 'Click pentru a edita consumul' : undefined}
+                      >
+                        <span className={invoice.consumptionKwh === 0 ? 'text-destructive' : ''}>
+                          {invoice.consumptionKwh !== null && invoice.consumptionKwh !== undefined
+                            ? `${formatNumber(invoice.consumptionKwh)} ${invoice.consumptionUnit ?? 'kWh'}`
+                            : '-'}
+                        </span>
+                        {onUpdate && (
+                          <Pencil className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                        )}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="text-right font-semibold tabular-nums">
                     {invoice.totalPayment !== null && invoice.totalPayment !== undefined
                       ? formatCurrency(invoice.totalPayment)
                       : '-'}
                   </TableCell>
+                  <TableCell className={`text-right font-semibold tabular-nums${invoice.soldTotal > 0 ? ' text-destructive' : ''}`}>
+                    {invoice.soldTotal ? formatCurrency(invoice.soldTotal) : '-'}
+                  </TableCell>
                   <TableCell>
                     <StatusBadge status={invoice.status} />
                   </TableCell>
+                  {onDelete && (
+                    <TableCell>
+                      <button
+                        onClick={() => onDelete(invoice.id)}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                        title="Șterge rândul"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
               {sortedInvoices.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={13} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={onDelete ? 15 : 14} className="text-center py-8 text-muted-foreground">
                     Nu s-au găsit facturi care să corespundă căutării.
                   </TableCell>
                 </TableRow>

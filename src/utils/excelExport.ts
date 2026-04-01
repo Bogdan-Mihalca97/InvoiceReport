@@ -33,6 +33,7 @@ export const exportToExcel = async (
     { header: 'Consum (kWh)', key: 'consumptionKwh', width: 14 },
     { header: 'Sursa Linie', key: 'sourceLine', width: 25 },
     { header: 'Total Plată (RON)', key: 'totalPayment', width: 18 },
+    { header: 'Sold (RON)', key: 'soldTotal', width: 18 },
     { header: 'Data Procesării', key: 'processingDate', width: 15 },
     { header: 'Link Document', key: 'documentLink', width: 30 },
     { header: 'Status', key: 'status', width: 12 },
@@ -84,6 +85,7 @@ export const exportToExcel = async (
       consumptionKwh: inv.consumptionKwh,
       sourceLine: inv.sourceLine,
       totalPayment: inv.totalPayment,
+      soldTotal: inv.soldTotal || 0,
       processingDate: inv.processingDate,
       documentLink: inv.documentLink || '',
       status: inv.status,
@@ -91,20 +93,28 @@ export const exportToExcel = async (
     });
 
     // Apply number formats to specific columns
-    // kWh - number with 0 decimals
     row.getCell('consumptionKwh').numFmt = '#,##0';
-    // RON - number with 2 decimals
     row.getCell('totalPayment').numFmt = '#,##0.00';
+    row.getCell('soldTotal').numFmt = '#,##0.00';
 
     // Wrap text for observations
     row.getCell('observations').alignment = { wrapText: true, vertical: 'top' };
   });
 
+  // Total consum row
+  if (invoices.length > 0) {
+    const totalConsum = invoices.reduce((sum, inv) => sum + (inv.consumptionKwh ?? 0), 0);
+    const totalRow = wsInvoices.addRow({ fileName: 'Total consum', consumptionKwh: totalConsum });
+    totalRow.font = { bold: true };
+    totalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } };
+    totalRow.getCell('consumptionKwh').numFmt = '#,##0';
+  }
+
   // Add auto-filter to all columns (provides filtering without Excel Table)
   if (invoices.length > 0) {
     wsInvoices.autoFilter = {
       from: { row: 1, column: 1 },
-      to: { row: invoices.length + 1, column: 18 },
+      to: { row: invoices.length + 1, column: 19 },
     };
   }
 
@@ -164,6 +174,22 @@ export const exportToExcel = async (
     row.getCell('totalYear').numFmt = '#,##0';
     row.getCell('monthlyAverage').numFmt = '#,##0';
   });
+
+  // Grand total row
+  if (analysis.length > 0) {
+    const grandTotalData: Record<string, string | number> = { nlcCode: 'Total consum', locationName: '' };
+    sortedMonths.forEach((month) => {
+      grandTotalData[month] = analysis.reduce((sum, item) => sum + (item.monthlyData[month] ?? 0), 0);
+    });
+    grandTotalData['totalYear'] = analysis.reduce((sum, item) => sum + item.totalYear, 0);
+    grandTotalData['monthlyAverage'] = analysis.reduce((sum, item) => sum + item.monthlyAverage, 0);
+    const grandRow = wsAnalysis.addRow(grandTotalData);
+    grandRow.font = { bold: true };
+    grandRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } };
+    sortedMonths.forEach((month) => { grandRow.getCell(month).numFmt = '#,##0'; });
+    grandRow.getCell('totalYear').numFmt = '#,##0';
+    grandRow.getCell('monthlyAverage').numFmt = '#,##0';
+  }
 
   // Add auto-filter
   const totalColumns = 2 + sortedMonths.length + 2; // NLC + Location + months + Total + Average

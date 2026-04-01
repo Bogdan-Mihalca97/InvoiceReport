@@ -16,8 +16,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '2024-01-01',
     endDate: '2024-01-31',
     consumptionKwh: 12450,
+    consumptionUnit: 'kWh' as const,
     sourceLine: 'Energie electrică activă',
     totalPayment: 8234.50,
+    soldTotal: 0,
     processingDate: '2024-02-01',
     documentLink: '',
     status: 'OK',
@@ -37,8 +39,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '2024-01-01',
     endDate: '2024-01-31',
     consumptionKwh: 8320,
+    consumptionUnit: 'kWh' as const,
     sourceLine: 'Total energie activă',
     totalPayment: 5512.80,
+    soldTotal: 0,
     processingDate: '2024-02-01',
     documentLink: '',
     status: 'OK',
@@ -58,8 +62,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '2024-02-01',
     endDate: '2024-02-29',
     consumptionKwh: 11280,
+    consumptionUnit: 'kWh' as const,
     sourceLine: 'Energie electrică activă',
     totalPayment: 7456.80,
+    soldTotal: 0,
     processingDate: '2024-03-01',
     documentLink: '',
     status: 'OK',
@@ -79,8 +85,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '2024-02-01',
     endDate: '2024-02-29',
     consumptionKwh: 7890,
+    consumptionUnit: 'kWh' as const,
     sourceLine: 'Total energie activă',
     totalPayment: 5228.70,
+    soldTotal: 0,
     processingDate: '2024-03-01',
     documentLink: '',
     status: 'OK',
@@ -100,8 +108,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '2024-03-01',
     endDate: '2024-03-31',
     consumptionKwh: 13120,
+    consumptionUnit: 'kWh' as const,
     sourceLine: 'Energie electrică activă',
     totalPayment: 8677.20,
+    soldTotal: 0,
     processingDate: '2024-04-01',
     documentLink: '',
     status: 'OK',
@@ -121,8 +131,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '2024-03-01',
     endDate: '2024-03-31',
     consumptionKwh: 0,
+    consumptionUnit: 'kWh' as const,
     sourceLine: '',
     totalPayment: 0,
+    soldTotal: 0,
     processingDate: '2024-04-01',
     documentLink: '',
     status: 'INCOMPLETE',
@@ -142,8 +154,10 @@ export const mockInvoices: InvoiceRecord[] = [
     startDate: '',
     endDate: '',
     consumptionKwh: 0,
+    consumptionUnit: 'kWh' as const,
     sourceLine: '',
     totalPayment: 0,
+    soldTotal: 0,
     processingDate: '2024-04-01',
     documentLink: '',
     status: 'ERROR',
@@ -153,20 +167,21 @@ export const mockInvoices: InvoiceRecord[] = [
 
 // Generate monthly analysis from invoices
 export const generateMonthlyAnalysis = (invoices: InvoiceRecord[]): MonthlyAnalysis[] => {
-  const nlcMap = new Map<string, { locationName: string; monthlyData: Record<string, number> }>();
+  const nlcMap = new Map<string, { locationName: string; consumptionUnit: 'kWh' | 'MWh'; monthlyData: Record<string, number> }>();
 
   invoices
     .filter((inv) => inv.status === 'OK' && inv.endDate)
     .forEach((invoice) => {
       const month = invoice.endDate.substring(0, 7); // YYYY-MM
-      
+
       if (!nlcMap.has(invoice.nlcCode)) {
         nlcMap.set(invoice.nlcCode, {
           locationName: invoice.locationName,
+          consumptionUnit: invoice.consumptionUnit ?? 'kWh',
           monthlyData: {},
         });
       }
-      
+
       const entry = nlcMap.get(invoice.nlcCode)!;
       entry.monthlyData[month] = (entry.monthlyData[month] || 0) + invoice.consumptionKwh;
     });
@@ -179,6 +194,7 @@ export const generateMonthlyAnalysis = (invoices: InvoiceRecord[]): MonthlyAnaly
     return {
       nlcCode,
       locationName: data.locationName,
+      consumptionUnit: data.consumptionUnit,
       monthlyData: data.monthlyData,
       totalYear,
       monthlyAverage,

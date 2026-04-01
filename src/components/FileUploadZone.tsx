@@ -1,18 +1,20 @@
 import { useState, useCallback, useRef } from 'react';
-import { Upload, Folder, FileText, Loader2 } from 'lucide-react';
+import { Upload, Folder, FileText, FileSpreadsheet, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 
 interface FileUploadZoneProps {
   onFilesSelected: (files: FileList) => void;
   isProcessing: boolean;
+  onImportExcel?: (file: File) => void;
 }
 
-const FileUploadZone = ({ onFilesSelected, isProcessing }: FileUploadZoneProps) => {
+const FileUploadZone = ({ onFilesSelected, isProcessing, onImportExcel }: FileUploadZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const excelInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -67,6 +69,17 @@ const FileUploadZone = ({ onFilesSelected, isProcessing }: FileUploadZoneProps) 
     folderInputRef.current?.click();
   };
 
+  const handleExcelInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) onImportExcel?.(file);
+    e.target.value = '';
+  }, [onImportExcel]);
+
+  const handleSelectExcel = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    excelInputRef.current?.click();
+  };
+
   return (
     <Card className="shadow-card animate-slide-up">
       <CardContent className="p-6">
@@ -100,6 +113,14 @@ const FileUploadZone = ({ onFilesSelected, isProcessing }: FileUploadZoneProps) 
             className="hidden"
             onChange={handleFileInput}
             {...{ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>}
+          />
+          {/* Excel import input */}
+          <input
+            ref={excelInputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={handleExcelInput}
           />
           
           <div className="flex flex-col items-center gap-4 text-center">
@@ -135,6 +156,12 @@ const FileUploadZone = ({ onFilesSelected, isProcessing }: FileUploadZoneProps) 
                     <FileText className="h-4 w-4" />
                     Selectează Fișiere
                   </Button>
+                  {onImportExcel && (
+                    <Button variant="outline" className="gap-2" onClick={handleSelectExcel}>
+                      <FileSpreadsheet className="h-4 w-4" />
+                      Importă Excel
+                    </Button>
+                  )}
                 </div>
               </>
             )}

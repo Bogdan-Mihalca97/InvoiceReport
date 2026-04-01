@@ -15,6 +15,16 @@ function identifySupplier(text: string): string {
     return 'PPC ENERGIE';
   }
 
+  // NOVA POWER&GAS detection
+  if (upperText.includes('NOVA POWER') || upperText.includes('VREAULANOVA') || upperText.includes('NOVAPG')) {
+    return 'NOVA POWER&GAS';
+  }
+
+  // TINMAR ENERGY detection
+  if (upperText.includes('TINMAR')) {
+    return 'TINMAR ENERGY';
+  }
+
   // ELECTRICA / E-DISTRIBUTIE detection
   if (upperText.includes('E-DISTRIBUTIE') || upperText.includes('E-DISTRIBUȚIE') || upperText.includes('EDISTRIBUTIE') || upperText.includes('ELECTRICA')) {
     return 'ELECTRICA';
@@ -105,6 +115,8 @@ function parseRomanianNumber(value: string): number {
  */
 function extractElectricaInvoiceNumber(text: string): string {
   const patterns = [
+    // EFI format: "Numarul facturii : EFI2437541971"
+    /Numarul[\s]+facturii[\s:]+([A-Z]{2,5}[0-9]{5,})/i,
     /Serie[\s\/]+Nr\.?[\s:]*([A-Z0-9\/\-]{5,})/i,
     /ID[\s]+factur[aă][\s:]*([A-Z0-9\/\-]{5,})/i,
     /nr\.?\s*factur[aă][\s:]*([A-Z0-9\-\/]{5,})/i,
@@ -359,6 +371,7 @@ function extractElectricaTotalPayment(text: string): number {
  */
 function extractElectricaBillingPeriod(text: string): { startDate: string; endDate: string } {
   const billingPatterns = [
+    // dot-separated (standard)
     /Perioad[aă][\s]+de[\s]+facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s\-–]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
     /Period[aă][\s]+de[\s]+facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s\-–]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
     /facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s\-–]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
@@ -371,14 +384,25 @@ function extractElectricaBillingPeriod(text: string): { startDate: string; endDa
       const startDay = match[1].padStart(2, '0');
       const startMonth = match[2].padStart(2, '0');
       const startYear = match[3];
-      const endDay = match[4].padStart(2, '0');
-      const endMonth = match[5].padStart(2, '0');
-      const endYear = match[6];
+      const endDay = (match[4] ?? '').padStart(2, '0');
+      const endMonth = (match[5] ?? '').padStart(2, '0');
+      const endYear = match[6] ?? '';
       return {
         startDate: `${startYear}-${startMonth}-${startDay}`,
-        endDate: `${endYear}-${endMonth}-${endDay}`,
+        endDate: endYear ? `${endYear}-${endMonth}-${endDay}` : '',
       };
     }
+  }
+
+  // EFI format: start and end on separate labelled lines with slashes
+  const efiStart = text.match(/Data\s+de\s+inceput\s+a\s+perioadei\s+de\s+facturare[\s:]+([0-9]{1,2})\/([0-9]{1,2})\/([0-9]{4})/i);
+  const efiEnd   = text.match(/Data\s+de\s+sfarsit\s+a\s+perioadei\s+de\s+facturare[\s:]+([0-9]{1,2})\/([0-9]{1,2})\/([0-9]{4})/i);
+  if (efiStart) {
+    const fmt = (d: string, m: string, y: string) => `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    return {
+      startDate: fmt(efiStart[1], efiStart[2], efiStart[3]),
+      endDate: efiEnd ? fmt(efiEnd[1], efiEnd[2], efiEnd[3]) : '',
+    };
   }
 
   return { startDate: '', endDate: '' };
@@ -432,15 +456,30 @@ function extractNlcSection(text: string, nlcCode: string, skipFirstPage: boolean
     }
   }
 
-  // Fallback: extract around the code
-  const nlcIndex = text.indexOf(nlcCode);
-  if (nlcIndex === -1) {
-    return text;
+  // Strategy 3: Row-bounded extraction — for tabular formats where multiple NLC codes
+  // appear on the same page (no DETALII headers, no per-NLC pages).
+  // Extract from the NLC code occurrence to just before the next NLC code occurrence.
+  const nlcPattern = /\b(\d{10,12})\b/g;
+  const allNlcOccurrences: Array<{ index: number; code: string }> = [];
+  let nlcMatch: RegExpExecArray | null;
+  while ((nlcMatch = nlcPattern.exec(text)) !== null) {
+    allNlcOccurrences.push({ index: nlcMatch.index, code: nlcMatch[1] });
   }
 
-  const start = Math.max(0, nlcIndex - 500);
-  const end = Math.min(text.length, nlcIndex + 5000);
-  return text.substring(start, end);
+  const thisOccurrence = allNlcOccurrences.find(o => o.code === nlcCode);
+  if (thisOccurrence) {
+    // Find the next occurrence that is a DIFFERENT code
+    const nextOther = allNlcOccurrences.find(o => o.index > thisOccurrence.index && o.code !== nlcCode);
+    const sectionStart = Math.max(0, thisOccurrence.index - 500);
+    const sectionEnd = nextOther ? nextOther.index : Math.min(text.length, thisOccurrence.index + 3000);
+    const section = text.substring(sectionStart, sectionEnd);
+    console.log(`NLC ${nlcCode}: strategy 3 row-bounded section (${section.length} chars)`);
+    console.log(`NLC ${nlcCode} section preview:`, section.substring(0, 300));
+    return section;
+  }
+
+  console.log(`NLC ${nlcCode}: fallback — returning full text`);
+  return text;
 }
 
 // ============================================================
@@ -448,13 +487,27 @@ function extractNlcSection(text: string, nlcCode: string, skipFirstPage: boolean
 // ============================================================
 
 /**
+ * Normalizes PPC invoice text by collapsing spurious spaces that PDF.js inserts
+ * between a letter and a following Romanian diacritic.
+ * e.g. "Adres ă   loc consum" → "Adresă   loc consum"
+ *      "Total de plat ă   factur ă   curent ă" → "Total de plată   factură   curentă"
+ */
+function normalizePPCText(text: string): string {
+  return text.replace(/([a-zA-Z]) ([ăâîșțĂÂÎȘȚşţ])/g, '$1$2');
+}
+
+/**
  * Extracts invoice number for PPC invoices
- * Format: "seria 25EI nr 06295537" or "Anexa la factura seria 25EI nr 06295537"
+ * Formats:
+ *   "seria 25EI nr 06295537"
+ *   "Anexa la factura seria 25EI nr 06295537"
+ *   "Factură fiscală seria 24EI nr. 01539286 din data de 25.01.2024"
  */
 function extractPPCInvoiceNumber(text: string): string {
   const patterns = [
-    /seria[\s]+([A-Z0-9]+)[\s]+nr[\s]+([0-9]+)/i,
-    /factura[\s]+seria[\s]+([A-Z0-9]+)[\s]+nr[\s]+([0-9]+)/i,
+    /Factur[aă]\s+fiscal[aă]\s+seria[\s]+([A-Z0-9]+)[\s]+nr\.?[\s]+([0-9]+)/i,
+    /seria[\s]+([A-Z0-9]+)[\s]+nr\.?[\s]+([0-9]+)/i,
+    /factura[\s]+seria[\s]+([A-Z0-9]+)[\s]+nr\.?[\s]+([0-9]+)/i,
   ];
 
   for (const pattern of patterns) {
@@ -616,36 +669,40 @@ function extractPPCPodCode(text: string): string {
 function extractPPCLocationName(text: string): string {
   console.log('Extracting PPC location from text (first 300 chars):', text.substring(0, 300));
 
-  // Pattern 1: Location name right before "Adresă loc consum" (with possible newline or space)
-  // Matches: "CAMIN\nAdresă loc consum:" or "BLOC SPECIALISTI\nAdresă loc consum:"
-  const beforeAddressMatch = text.match(/^([A-Z][A-Z0-9\s\.\-]{2,60}?)(?:-\d+[\/\d\.]*)?[\s\r\n]+Adres[aă]\s+loc\s+consum/im);
-  if (beforeAddressMatch) {
-    let name = beforeAddressMatch[1].trim();
-    name = name.replace(/-\d+.*$/, '').trim();
-    console.log('Found location before address:', name);
-    if (name.length >= 3 && !name.includes('ELECTEL') && !name.includes('POD') && !/^Cod\s/i.test(name)) {
+  const isExcluded = (name: string) =>
+    name.includes('ELECTEL') ||
+    name.includes('POD') ||
+    /^(Adres|Cod\s|Nivel|Oferta|Pagina|Interval|Specificat|Anexa|Furnizor)/i.test(name);
+
+  // Pattern 0: Reference number + dash + name  e.g. "133007450/08.05.2014 - ILUMINAT PUBLIC"
+  const refWithNameMatch = text.match(/^\d[\d\/\.]+\s*-\s*([A-Z][A-Z0-9\s\(\)\/\.\-]{2,80}?)[\r\n]/im);
+  if (refWithNameMatch) {
+    const name = refWithNameMatch[1].trim();
+    console.log('Found location from ref+name line:', name);
+    if (name.length >= 3 && !isExcluded(name)) {
       return name;
     }
   }
 
-  // Pattern 2: First uppercase word/phrase at start of text (location header)
-  // Must be followed by newline and "Adresă" somewhere
-  const firstLineMatch = text.match(/^([A-Z][A-Z0-9\s\.\-]{2,60}?)[\r\n]/m);
+  // Pattern 1: Location name right before "Adresă loc consum" (with possible newline or space)
+  // Allows lowercase start: "CAMIN", "BLOC SPECIALISTI", "apartament NR.127B"
+  const beforeAddressMatch = text.match(/^([A-Za-zÀ-žÁ-ú][^\r\n]{2,80}?)(?:-\d+[\/\d\.]*)?[\s\r\n]+\s*Adres[aă]\s+loc\s+consum/im);
+  if (beforeAddressMatch) {
+    let name = beforeAddressMatch[1].trim();
+    name = name.replace(/-\d+.*$/, '').trim();
+    console.log('Found location before address:', name);
+    if (name.length >= 3 && !isExcluded(name)) {
+      return name;
+    }
+  }
+
+  // Pattern 2: First line at start of text (location header)
+  const firstLineMatch = text.match(/^([A-Za-zÀ-žÁ-ú][^\r\n]{2,80}?)[\r\n]/m);
   if (firstLineMatch) {
     let name = firstLineMatch[1].trim();
     name = name.replace(/-\d+.*$/, '').trim();
     console.log('Found location from first line:', name);
-    // Exclude common non-location patterns
-    if (name.length >= 3 &&
-        !name.includes('ELECTEL') &&
-        !name.includes('POD') &&
-        !/^Adres/i.test(name) &&
-        !/^Cod\s/i.test(name) &&
-        !/^Nivel/i.test(name) &&
-        !/^Oferta/i.test(name) &&
-        !/^Pagina/i.test(name) &&
-        !/^Interval/i.test(name) &&
-        !/^Specificat/i.test(name)) {
+    if (name.length >= 3 && !isExcluded(name)) {
       return name;
     }
   }
@@ -655,18 +712,18 @@ function extractPPCLocationName(text: string): string {
   if (locationWithRefMatch) {
     const name = locationWithRefMatch[1].trim();
     console.log('Found location name with ref:', name);
-    if (name.length >= 3 && !name.includes('ELECTEL') && !name.includes('POD') && !/^Adres/i.test(name)) {
+    if (name.length >= 3 && !isExcluded(name)) {
       return name;
     }
   }
 
   // Pattern 4: Look for location as standalone line before "Cod ELECTEL"
-  const beforeElectelMatch = text.match(/^([A-Z][A-Z0-9\s\.\-]{2,60}?)[\s\r\n]+(?:Adres|Cod\s+ELECTEL)/im);
+  const beforeElectelMatch = text.match(/^([A-Za-zÀ-žÁ-ú][^\r\n]{2,80}?)[\s\r\n]+(?:Adres|Cod\s+ELECTEL)/im);
   if (beforeElectelMatch) {
     let name = beforeElectelMatch[1].trim();
     name = name.replace(/-\d+.*$/, '').trim();
     console.log('Found location before ELECTEL:', name);
-    if (name.length >= 3 && !name.includes('ELECTEL') && !name.includes('POD')) {
+    if (name.length >= 3 && !isExcluded(name)) {
       return name;
     }
   }
@@ -699,7 +756,12 @@ function extractPPCAddress(text: string): string {
       let address = match[1].trim();
       console.log('Found potential address:', address.substring(0, 80));
 
-      // Clean up - remove cod poștal at end
+      // Truncate at known labels that follow the address on the same extracted line
+      address = address.replace(/\s*Ofert[aă]\s*\/\s*Tarif.*$/i, '').trim();
+      address = address.replace(/\s*Nivel\s+tensiune.*$/i, '').trim();
+      address = address.replace(/\s*Putere\s+avizat[aă].*$/i, '').trim();
+      address = address.replace(/\s*Interval\s+citire.*$/i, '').trim();
+      // Remove cod poștal at end
       address = address.replace(/,?\s*cod\s*po[sș]tal\s*\d*/i, '').trim();
       address = address.replace(/,\s*$/, '').trim();
       // Remove trailing 6-digit codes
@@ -715,107 +777,30 @@ function extractPPCAddress(text: string): string {
   return '';
 }
 
+
 /**
- * Extracts ALL consumption periods from PPC invoices
- * Each ELECTEL can have multiple billing periods with different kWh values
- * Format: "Energie activă 17.10.24-16.01.25 kWh ... 0" and "Energie activă 17.01.25-31.01.25 kWh ... 48"
+ * Extracts net kWh from "Acciză"/"Accize" rows in "Servicii facturate".
+ * Takes the Cantitate facturată from "Acciză" rows only (excludes "Acciză estimată anterior").
+ * Acciză (excise duty) is levied on net consumption → the most reliable kWh source for PPC.
+ * Romanian number format: dot=thousands separator, comma=decimal (e.g. "3.022,00", "184,000").
  */
-interface ConsumptionPeriod {
-  startDate: string;
-  endDate: string;
-  kWh: number;
-  sourceLine: string;
-}
+function extractPPCServiceTableKwh(text: string): { value: number; sourceLine: string } {
+  const servStart = text.search(/Servicii\s+facturate/i);
+  const scope = servStart >= 0 ? text.substring(servStart) : text;
 
-function extractPPCConsumptionPeriods(text: string): ConsumptionPeriod[] {
-  const periods: ConsumptionPeriod[] = [];
+  // [\s\S]{0,200}? bridges multi-line PDF.js column output between label and quantity.
+  // Strict Romanian format: dot=thousands, comma=decimal, optional decimal part.
+  // Negative lookahead skips "Acciză estimată anterior" — those rows have no kWh U.M.
+  const rowPattern = /Acciz[aă](?!\s+estimat[aă]?\s+anterior)[\s\S]{0,200}?(-?\d{1,3}(?:\.\d{3})*(?:,\d{2,3})?)\s*kWh/gi;
+  const matches = [...scope.matchAll(rowPattern)];
+  if (matches.length === 0) return { value: 0, sourceLine: '' };
 
-  // We want the MAIN consumption table rows, NOT the detailed "cf. OUG" breakdown
-  // Main table format varies but generally:
-  // "Energie activă DD.MM.YY-DD.MM.YY kWh CONST INDEX_VECHI INDEX_NOU CANTITATE_MASURATA ..."
-  // Where INDEX contains "/" (like "26222/cit" or "26222/estimat convenie")
-  // CANTITATE_MASURATA is the number we want (0, 48, 28, etc.)
-
-  // Find all "Energie activă" rows with date ranges (main table rows only, not OUG breakdown)
-  const rowPattern = /Energie\s+activ\s*[aă]\s+(\d{1,2})\.(\d{1,2})\.(\d{2,4})\s*-\s*(\d{1,2})\.(\d{1,2})\.(\d{2,4})\s+kWh\s+(\d+)([^\n]*)/gi;
-
-  const matches = text.matchAll(rowPattern);
-  for (const match of matches) {
-    // Check if this is a detailed breakdown row (has "OUG" or "cf." nearby)
-    const contextBefore = text.substring(Math.max(0, match.index! - 80), match.index!);
-
-    // Skip if this is a detailed "cf. OUG" row (these have "OUG", "cf.", or row numbers like "1.", "2.")
-    if (/OUG|cf\.|^\s*\d+\.\s+Energie/i.test(contextBefore)) {
-      continue;
-    }
-
-    const startDay = match[1].padStart(2, '0');
-    const startMonth = match[2].padStart(2, '0');
-    let startYear = match[3];
-    if (startYear.length === 2) startYear = '20' + startYear;
-
-    const endDay = match[4].padStart(2, '0');
-    const endMonth = match[5].padStart(2, '0');
-    let endYear = match[6];
-    if (endYear.length === 2) endYear = '20' + endYear;
-
-    const constValue = match[7]; // This is the CONST column, not what we want
-    const restOfRow = match[8] || ''; // Everything after "kWh CONST"
-
-    console.log(`Row for ${startDay}.${startMonth}.${startYear}: const=${constValue}, rest="${restOfRow.substring(0, 80)}"`);
-
-    // Parse the rest of the row to find Cantitate măsurată
-    // Format: INDEX_VECHI(with/) INDEX_NOU(may or may not have /) CANTITATE CORECȚII ...
-    // After the "/" entries, find the first standalone number
-
-    // Extract all numbers from the rest of the row
-    const numbers = restOfRow.match(/\d+/g) || [];
-    let kWh = 0;
-
-    // Look for pattern: after text containing "/", the next number is likely Cantitate
-    // Split by "/" to find where index readings end
-    const partsAfterSlash = restOfRow.split('/');
-    if (partsAfterSlash.length >= 2) {
-      // After the last "/" and its associated text, find the first number
-      const lastPart = partsAfterSlash[partsAfterSlash.length - 1];
-      // Skip the first word (which is part of the index like "cit" or "estimat") and find the number
-      const afterIndexMatch = lastPart.match(/(?:cit|citit|estimat|convenie|autocitit)[^\d]*(\d+)/i);
-      if (afterIndexMatch) {
-        kWh = parseInt(afterIndexMatch[1]);
-      } else {
-        // Try to find the first standalone number after index text
-        const numbersInLastPart = lastPart.match(/\d+/g);
-        if (numbersInLastPart && numbersInLastPart.length > 0) {
-          // The first number after index text is likely Cantitate
-          kWh = parseInt(numbersInLastPart[0]);
-        }
-      }
-    } else if (numbers.length > 0) {
-      // Fallback: if no "/" found, the rest of the row might just have numbers
-      // Take the first number as a fallback
-      kWh = parseInt(numbers[0]);
-    }
-
-    console.log(`  -> Extracted kWh: ${kWh}`);
-
-    // Check if we already have this period (avoid duplicates)
-    const exists = periods.some(p =>
-      p.startDate === `${startYear}-${startMonth}-${startDay}` &&
-      p.endDate === `${endYear}-${endMonth}-${endDay}`
-    );
-
-    if (!exists) {
-      periods.push({
-        startDate: `${startYear}-${startMonth}-${startDay}`,
-        endDate: `${endYear}-${endMonth}-${endDay}`,
-        kWh: kWh,
-        sourceLine: 'Energie activă',
-      });
-    }
+  let total = 0;
+  for (const m of matches) {
+    const num = parseRomanianNumber(m[1]);
+    if (!isNaN(num)) total += num;
   }
-
-  console.log('Found main consumption periods:', periods);
-  return periods;
+  return { value: Math.round(total), sourceLine: 'Acciză (Servicii facturate)' };
 }
 
 /**
@@ -823,34 +808,35 @@ function extractPPCConsumptionPeriods(text: string): ConsumptionPeriod[] {
  * Used when no specific periods are found
  */
 function extractPPCConsumption(text: string): { value: number; sourceLine: string } {
-  // Try to find total consumption
-  const patterns = [
-    /Consum[\s]+energie[\s]+activ[aă][^\n]*?(\d+)/i,
-    /Total[\s]+energie[\s\S]*?(-?[0-9.,]+)[\s]*kWh/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      const num = parseRomanianNumber(match[1]);
-      if (!isNaN(num) && Math.abs(num) < 10000000) {
-        return { value: Math.round(num), sourceLine: 'Energie activă' };
-      }
-    }
+  // No "Servicii facturate" table → location has 0 consumption (no excise duty charged)
+  if (!/Servicii\s+facturate/i.test(text)) {
+    return { value: 0, sourceLine: 'no Servicii facturate' };
   }
 
-  return { value: 0, sourceLine: '' };
+  // Primary: Acciză rows give the most reliable net kWh for all PPC invoice types
+  const fromAcciza = extractPPCServiceTableKwh(text);
+  if (fromAcciza.value !== 0) return fromAcciza;
+
+  return { value: 0, sourceLine: 'Acciză not found' };
 }
 
 /**
- * Extracts total payment for PPC invoices
- * Format: "Total de plată (6=4+5) ... 30.075,79 lei"
+ * Extracts total payment for PPC invoices.
+ * Priority:
+ *   1. Numbered "Total de plată (N=...)" row — grand total including any outstanding balance
+ *      e.g. "6. Total de plată (6=4+5) lei -5.671,61"
+ *   2. "Total de plata factura curenta" — current-invoice total (Format A)
+ *      e.g. "5. Total de plata factura curenta (5=4) lei 6.984,89"
+ *   3. "Valoare factură curentă" — current-invoice amount (Format B, regularisation invoices)
  */
 function extractPPCTotalPayment(text: string): number {
   const patterns = [
-    /Total[\s]+de[\s]+plat[aă][\s\S]*?(-?[0-9.,]+)(?:\s*lei)?/i,
-    /Total[\s]+de[\s]+plat[aă][\s]+\([^)]+\)[\s\S]*?(-?[0-9]+[.,][0-9]{2})/i,
-    /6\.[\s]*Total[\s]+de[\s]+plat[aă][\s\S]*?(-?[0-9]+[.,][0-9]{2})/i,
+    // Priority 1: invoice-level "N. Total de plată (N=...)" — excludes per-location "loc consum" rows
+    /\d+\.\s+Total\s+de\s+plat[aă](?!\s+factur[aă])(?!\s+loc\s+consum)[\s\S]{0,50}?\([^)]+\)[\s\S]{0,200}?(-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i,
+    // Priority 2: "Total de plata factura curenta" — current invoice total (Format A)
+    /Total\s+de\s+plat[aă]\s+factur[aă]\s+curent[aă][\s\S]{0,150}?(-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i,
+    // Priority 3: "Valoare factură curentă" — Format B regularisation invoices
+    /Valoare\s+factur[aă]\s+curent[aă][\s\S]{0,200}?(-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i,
   ];
 
   for (const pattern of patterns) {
@@ -867,13 +853,39 @@ function extractPPCTotalPayment(text: string): number {
 }
 
 /**
+ * Extracts per-location total (TVA-inclusive) from a PPC location section.
+ * Targets "Total de plată factură curentă/loc consum cu TVA [N=...] 12,28"
+ * (row with "cu TVA" — NOT the ex-TVA row that appears one line above it).
+ * Amount may be on the same or next column line in PDF.js output.
+ */
+function extractPPCLocationTotal(sectionText: string): number {
+  if (!/Servicii\s+facturate/i.test(sectionText)) return 0;
+  const patterns = [
+    // Primary: "loc consum cu TVA" row — TVA-inclusive total
+    /loc\s+consum\s+cu\s+TVA[\s\S]{0,150}?(-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i,
+    // Fallback: numbered row "N. Total de plată ... loc consum cu TVA ... amount"
+    /\d+\.\s*Total\s+de\s+plat[aă][^(]*loc\s+consum\s+cu\s+TVA[\s\S]{0,150}?(-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = sectionText.match(pattern);
+    if (match) {
+      const num = parseRomanianNumber(match[1]);
+      if (!isNaN(num)) return parseFloat(num.toFixed(2));
+    }
+  }
+  return 0;
+}
+
+/**
  * Extracts billing period for PPC invoices
- * Format: "Perioadă facturare: 16.10.2024-31.01.2025"
+ * Formats:
+ *   "Perioadă facturare: 16.10.2024-31.01.2025"  (same line)
+ *   "Perioadă facturare:\n23.10.2024-30.11.2024"  (OCR — date on next line)
  */
 function extractPPCBillingPeriod(text: string): { startDate: string; endDate: string } {
   const patterns = [
-    /Perioad[aă][\s]+facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s]*[\-–][\s]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
-    /Perioad[aă][\s]+de[\s]+facturare[\s:]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s]*[\-–][\s]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
+    /Perioad[aă][\s]+facturare[\s\S]{0,30}?([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s]*[\-–][\s]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
+    /Perioad[aă][\s]+de[\s]+facturare[\s\S]{0,30}?([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})[\s]*[\-–][\s]*([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i,
   ];
 
   for (const pattern of patterns) {
@@ -896,64 +908,536 @@ function extractPPCBillingPeriod(text: string): { startDate: string; endDate: st
 }
 
 /**
- * Extracts the text section for a specific ELECTEL code (PPC)
- * Each ELECTEL has its own page with location header at the top
+ * Extracts the text section for a specific ELECTEL code (PPC).
+ *
+ * Strategy: use "Adresă loc consum" as section boundaries — every location block
+ * (named or unnamed) contains exactly one "Adresă loc consum" line.  We look back
+ * up to two lines before each occurrence to capture any location name or reference
+ * number that precedes it (e.g. "ILUMINAT PUBLIC NEGOI 2(PT 275)" or
+ * "133007450/08.05.2014 - ILUMINAT PUBLIC").
  */
 function extractElectelSection(text: string, electelCode: string): string {
-  const pages = text.split(/---\s*PAGE\s*BREAK\s*---/i);
+  const addrPattern = /Adres[aă]\s+loc\s+consum/gi;
+  const addrMatches = [...text.matchAll(addrPattern)];
 
-  // Find the page containing this ELECTEL code
-  for (const page of pages) {
-    if (page.includes(electelCode)) {
-      console.log(`Found ELECTEL ${electelCode} on page, length: ${page.length}`);
-      // Return the whole page - it should contain the location header at the top
-      return page.trim();
+  if (addrMatches.length > 0) {
+    for (let i = 0; i < addrMatches.length; i++) {
+      const addrPos = addrMatches[i].index!;
+      const sectionEnd = i < addrMatches.length - 1 ? addrMatches[i + 1].index! : text.length;
+
+      // Look back up to 300 chars to include the 1-2 lines before "Adresă loc consum"
+      // (location name or reference number line)
+      const lookbackStart = Math.max(0, addrPos - 300);
+      const pre = text.substring(lookbackStart, addrPos);
+      const lastNL = pre.lastIndexOf('\n');
+      const prevNL = lastNL > 0 ? pre.lastIndexOf('\n', lastNL - 1) : -1;
+      const sectionStart = lookbackStart + (prevNL >= 0 ? prevNL + 1 : 0);
+
+      const section = text.substring(sectionStart, sectionEnd);
+      if (section.includes(electelCode)) {
+        console.log(`Found ELECTEL ${electelCode} in addr-bounded section ${i}`);
+        return section.trim();
+      }
     }
   }
 
-  // If not found in pages, try to find section by looking for location headers
-  // PPC format: Each location starts with uppercase name followed by "Adresă loc consum"
-  const locationPattern = /^([A-Z][A-Z0-9\s\.\-]+)[\r\n]+Adres[aă]\s+loc\s+consum/gim;
-  const locationMatches = [...text.matchAll(locationPattern)];
-
-  for (let i = 0; i < locationMatches.length; i++) {
-    const sectionStart = locationMatches[i].index!;
-    const sectionEnd = i < locationMatches.length - 1 ? locationMatches[i + 1].index! : text.length;
-    const section = text.substring(sectionStart, sectionEnd);
-
-    if (section.includes(electelCode)) {
-      console.log(`Found ELECTEL ${electelCode} in location section starting at ${sectionStart}`);
-      return section.trim();
-    }
-  }
-
-  // Try finding by "Cod ELECTEL" pattern
-  const electelPattern = /Cod[\s]+ELECTEL/gi;
-  const electelMatches = [...text.matchAll(electelPattern)];
-
-  for (let i = 0; i < electelMatches.length; i++) {
-    const matchStart = electelMatches[i].index!;
-    // Include 500 chars before to capture location header
-    const sectionStart = Math.max(0, matchStart - 500);
-    const sectionEnd = i < electelMatches.length - 1 ? electelMatches[i + 1].index! : text.length;
-    const section = text.substring(sectionStart, sectionEnd);
-
-    if (section.includes(electelCode)) {
-      console.log(`Found ELECTEL ${electelCode} near Cod ELECTEL pattern`);
-      return section.trim();
-    }
-  }
-
-  // Fallback: extract around the code with generous context
+  // Fallback: extract around code with generous context
   const codeIndex = text.indexOf(electelCode);
-  if (codeIndex === -1) {
-    return text;
-  }
-
+  if (codeIndex === -1) return text;
   const start = Math.max(0, codeIndex - 800);
   const end = Math.min(text.length, codeIndex + 3000);
   console.log(`Using fallback extraction for ELECTEL ${electelCode}`);
   return text.substring(start, end).trim();
+}
+
+// ============================================================
+// MWH DECIMAL PARSER (for NOVA and TINMAR)
+// ============================================================
+
+/**
+ * Parses MWh values that always use comma as decimal separator.
+ * "0,659" → 0.659, "3,322000" → 3.322, "137,3470" → 137.347
+ * Uses the "always decimal" interpretation regardless of digit count after comma.
+ */
+function parseMwhDecimal(value: string): number {
+  return parseFloat(value.replace(/\./g, '').replace(',', '.'));
+}
+
+// ============================================================
+// NOVA POWER&GAS-SPECIFIC EXTRACTION FUNCTIONS
+// ============================================================
+
+/**
+ * Extracts invoice number for NOVA invoices
+ * Format: "Factură fiscală: Serie: NPE Nr.: 225205278"
+ */
+function extractNovaInvoiceNumber(text: string): string {
+  const patterns = [
+    /Factur[aă]\s+fiscal[aă]:\s+Serie:\s+([A-Z]+)\s+Nr\.\s*:\s+(\d+)/i,
+    /Serie:\s+([A-Z]+)\s+Nr\.\s*:\s+(\d+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return `${match[1]}-${match[2]}`;
+    }
+  }
+  return '';
+}
+
+/**
+ * Extracts issue date for NOVA invoices
+ * Format: "Dată emitere: 06/10/2025" (DD/MM/YYYY with slashes)
+ */
+function extractNovaIssueDate(text: string): string {
+  const match = text.match(/Dat[aă]\s+emitere:\s+(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+  if (match) {
+    const day = match[1].padStart(2, '0');
+    const month = match[2].padStart(2, '0');
+    return `${match[3]}-${month}-${day}`;
+  }
+  // Fallback: DD.MM.YYYY adjacent
+  const match2 = text.match(/Dat[aă]\s+emitere:\s+(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+  if (match2) {
+    const day = match2[1].padStart(2, '0');
+    const month = match2[2].padStart(2, '0');
+    return `${match2[3]}-${month}-${day}`;
+  }
+  // Broad fallback: columnar PDFs where label and value are far apart (up to 500 chars)
+  // e.g. compensation invoices where all labels appear first, then all values
+  const match3 = text.match(/Dat[aă]\s+emitere:[\s\S]{0,500}?(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+  if (match3) {
+    const day = match3[1].padStart(2, '0');
+    const month = match3[2].padStart(2, '0');
+    return `${match3[3]}-${month}-${day}`;
+  }
+  return '';
+}
+
+/**
+ * Extracts client name for NOVA invoices
+ * Format: "Client: MUNICIPIUL ORASTIE"
+ */
+function extractNovaClientName(text: string): string {
+  const match = text.match(/Client:\s+([A-Z][A-Z\s\.\-]+?)(?:\s*\n|\s{2,}|Cod\s+Client)/i);
+  if (match) {
+    return match[1].trim().replace(/\s+/g, ' ');
+  }
+  // Fallback: look for client before address on first page
+  const match2 = text.match(/MUNICIPIUL\s+[A-Z]+/);
+  if (match2) return match2[0].trim();
+  return '';
+}
+
+/**
+ * Extracts total payment for NOVA invoices
+ * Format: "TOTAL DE PLATĂ lei 130.649,74"
+ */
+function extractNovaTotalPayment(text: string): number {
+  // NPE multi-location invoices: use "VALOARE FACTURA CURENTA lei [amount]" (current-period total,
+  // excludes previous balance). PRO/NCD invoices fall back to "TOTAL DE PLATĂ lei [amount]".
+  const patterns = [
+    /VALOARE\s+FACTUR[AĂ]\s+CURENT[AĂ]\s+lei\s+(-?[\d.,]+)/i,
+    /TOTAL\s+DE\s+PLAT[AĂ]\s+lei\s+(-?[\d.,]+)/i,
+    /TOTAL\s+DE\s+PLAT[AĂ]\s+(-?[\d.,]+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const num = parseRomanianNumber(match[1]);
+      if (!isNaN(num) && num !== 0) return parseFloat(num.toFixed(2));
+    }
+  }
+  return 0;
+}
+
+/**
+ * Extracts billing period for NOVA invoices
+ * Format: "Perioada de facturare: [optional text] 01.07.2025 - 31.08.2025"
+ * The text between the label and dates may contain "Factură Piața Concurențială" etc.
+ */
+function extractNovaBillingPeriod(text: string): { startDate: string; endDate: string } {
+  // Allow any characters between label and dates (lazy match)
+  // Dot format: "01.07.2025 - 31.08.2025" (NPE electricity)
+  const match = text.match(
+    /Perioada\s+de\s+facturare:[\s\S]{0,80}?(\d{1,2})\.(\d{1,2})\.(\d{4})\s*[-–]\s*(\d{1,2})\.(\d{1,2})\.(\d{4})/i
+  );
+  if (match) {
+    return {
+      startDate: `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`,
+      endDate: `${match[6]}-${match[5].padStart(2, '0')}-${match[4].padStart(2, '0')}`,
+    };
+  }
+  // Slash format: "01/10/2025 - 31/12/2025" (NCD gas)
+  const matchSlash = text.match(
+    /Perioada\s+de\s+facturare:[\s\S]{0,80}?(\d{1,2})\/(\d{1,2})\/(\d{4})\s*[-–]\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i
+  );
+  if (matchSlash) {
+    return {
+      startDate: `${matchSlash[3]}-${matchSlash[2].padStart(2, '0')}-${matchSlash[1].padStart(2, '0')}`,
+      endDate: `${matchSlash[6]}-${matchSlash[5].padStart(2, '0')}-${matchSlash[4].padStart(2, '0')}`,
+    };
+  }
+  return { startDate: '', endDate: '' };
+}
+
+
+interface NovaLocationData {
+  pod: string;
+  nlcCode: string;
+  locationName: string;
+  address: string;
+  consumptionMwh: number;
+  isGas: boolean;
+  startDate: string;
+  endDate: string;
+  totalPayment: number;
+}
+
+/**
+ * Extracts location data from a single NOVA page section
+ */
+function extractNovaLocationFromPage(pageText: string): NovaLocationData {
+  // POD: standard "POD: RO005E..." or compensation format "POD/CLC: RO005E..."
+  const podMatch = pageText.match(/POD:\s*(RO[0-9A-Z]{10,20})/i)
+                || pageText.match(/POD\/CLC:\s*(RO[0-9A-Z]{10,20})/i);
+  const pod = podMatch ? podMatch[1].trim() : '';
+
+  // NLC: electricity "Cod unic locație: LC-XXXXXXXX" or gas "Cod loc de consum: DEG0414289"
+  const nlcMatch = pageText.match(/Cod\s+unic\s+loca[tț]ie:\s+(LC-[\d]+)/i)
+                || pageText.match(/Cod\s+loc(?:\s+de)?\s+consum:\s+(\S+)/i);
+  const nlcCode = nlcMatch ? nlcMatch[1].trim() : '';
+
+  // Location name (Nume locatie/locație: ... stop at "Cod unic", triple-space, or end)
+  const locNameMatch = pageText.match(/Nume\s+loca[tț]ie:\s+(.*?)(?:\s+Cod\s+unic|\s{3,}|$)/i);
+  let locationName = locNameMatch ? locNameMatch[1].trim() : '';
+  // Strip CPV procurement code prefix: e.g. 'CPV 09123000-7, "Locuinte sociale..."' → 'Locuinte sociale...'
+  locationName = locationName.replace(/^CPV\s+[\d\-]+,?\s*/i, '').replace(/^[""]|[""]$/g, '').trim();
+
+  // Address: handles "A dresa loc de consum:" (NPE split) and "Adresă loc de consum:" (NCD/compensation)
+  // Stop before next field: Num[eă] locatie, Num ă r contract (PRO), Cod unic, POD (compensation format),
+  // Nivel tensiune, Perioadă facturare, or newline
+  const addrMatch = pageText.match(
+    /(?:A\s+dresa|Adres[aă])\s+loc\s+de\s+consum:\s+(.*?)(?:\s+Num[eă]\s+loca[tț]ie:|\s+Num\s*[aă]\s*r?\s+contract|\s+Cod\s+unic|\s+POD[:\s\/]|\s+Nivel\s+tensiune|\s+Perioad[aă]\s+facturare:|\s*\n|$)/i
+  );
+  let address = addrMatch ? addrMatch[1].trim() : '';
+  address = address.replace(/,?\s*Cod\s+[Pp]ostal[:\s]*\d*/i, '').trim();
+  address = address.replace(/,\s*$/, '').trim();
+
+  // Consumption (electricity): use FIRST "Pret de baza energie electrica fara Tg ... MWh [value]"
+  // from the service items table. This is more reliable than the meter table row because:
+  // - Meter table can have multiple "Energie activă" rows (different sub-periods), causing wrong greediness
+  // - The "Pret de baza" row has the billed quantity in the format "MWh [value]" (value AFTER MWh)
+  // Consumption (gas): "Cantitatea facturată (MWh/mc): 0,156751" or "CONSUM GAZE NATURALE MWh 0,156751"
+  let consumptionMwh = 0;
+  let isGas = false;
+  const pretDeBasaMatch = pageText.match(
+    /Pret\s+de\s+baza\s+energie\s+electrica\s+fara\s+Tg[\s\S]{0,60}?MWh\s+(-?[\d,]+)/i
+  );
+  if (pretDeBasaMatch) {
+    consumptionMwh = parseMwhDecimal(pretDeBasaMatch[1]);
+  } else {
+    const gasMatch = pageText.match(/Cantitat(?:ea\s+factur[aă]t[aă]|e\s+factur[aă]t[aă])\s*\([^)]*\)[:\s]+(-?[\d,]+)/i)
+                  || pageText.match(/CONSUM\s+GAZE\s+NATURALE\s+MWh\s+(-?[\d,]+)/i);
+    if (gasMatch) { consumptionMwh = parseMwhDecimal(gasMatch[1]); isGas = true; }
+  }
+
+  // Billing period per location: "Perioada/Perioadă facturare: DD.MM.YYYY-DD.MM.YYYY" or "DD/MM/YYYY-DD/MM/YYYY"
+  let startDate = '';
+  let endDate = '';
+  const periodDot = pageText.match(
+    /Perioad[aă]\s+facturare:\s+(\d{1,2})\.(\d{1,2})\.(\d{4})[-–](\d{1,2})\.(\d{1,2})\.(\d{4})/i
+  );
+  const periodSlash = pageText.match(
+    /Perioad[aă]\s+facturare:\s+(\d{1,2})\/(\d{1,2})\/(\d{4})[-–](\d{1,2})\/(\d{1,2})\/(\d{4})/i
+  );
+  const periodMatch = periodDot || periodSlash;
+  if (periodMatch) {
+    startDate = `${periodMatch[3]}-${periodMatch[2].padStart(2, '0')}-${periodMatch[1].padStart(2, '0')}`;
+    endDate = `${periodMatch[6]}-${periodMatch[5].padStart(2, '0')}-${periodMatch[4].padStart(2, '0')}`;
+  }
+
+  // Total per location: "TOTAL DE PLATA FACTURA CURENTA/LOC CONSUM [AMOUNT] [TVA]"
+  const totalMatch = pageText.match(/TOTAL\s+DE\s+PLATA\s+FACTURA\s+CURENTA\/LOC\s+CONSUM\s+([\d,.]+)/i);
+  let totalPayment = 0;
+  if (totalMatch) {
+    const num = parseRomanianNumber(totalMatch[1]);
+    if (!isNaN(num)) totalPayment = parseFloat(num.toFixed(2));
+  }
+
+  return { pod, nlcCode, locationName, address, consumptionMwh, isGas, startDate, endDate, totalPayment };
+}
+
+// ============================================================
+// TINMAR ENERGY-SPECIFIC EXTRACTION FUNCTIONS
+// ============================================================
+
+/**
+ * Extracts invoice number for TINMAR invoices
+ * Format: "Serie: TINM25C- Nr.: 3959" → "TINM25C-3959"
+ *         "Serie: TE25RP- Nr.: 31"    → "TE25RP-31"
+ */
+function extractTinmarInvoiceNumber(text: string): string {
+  // Match any TINMAR series (TINM25C, TE25RP, etc.)
+  const serieMatch = text.match(/Serie:\s+([A-Z0-9]+)-\s+Nr\.:\s+(\d+)/i);
+  if (serieMatch) return `${serieMatch[1]}-${serieMatch[2]}`;
+  // Fallback: extract from annex header "Anexa la factura: SERIES-NR/DD.MM.YYYY"
+  const annexMatch = text.match(/Anexa\s+la\s+factura:?\s+([A-Z0-9\-]+)\/[\d.]+/i);
+  if (annexMatch) return annexMatch[1].trim();
+  return '';
+}
+
+/**
+ * Extracts issue date for TINMAR invoices
+ * PDF layout reorders columns, so "Data emitere:" label may not be adjacent to its value.
+ * Primary: extract from annex reference "Anexa la factura TINM25C-3959/21.03.2025"
+ * Fallback: first date after "Data emitere:" allowing intervening text
+ */
+function extractTinmarIssueDate(text: string): string {
+  // Best source: annex header "Anexa la factura: TE25RP-31/10.03.2025" or "Anexa la factura TINM25C-3959/21.03.2025"
+  const annexMatch = text.match(/Anexa\s+la\s+factura:?\s+[A-Z0-9\-]+\/(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+  if (annexMatch) {
+    return `${annexMatch[3]}-${annexMatch[2].padStart(2, '0')}-${annexMatch[1].padStart(2, '0')}`;
+  }
+  // Fallback: Date emitere with possible intervening text (column layout)
+  const match = text.match(/Data\s+emitere:[\s\S]{0,60}?(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+  if (match) {
+    return `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`;
+  }
+  return '';
+}
+
+/**
+ * Extracts client name for TINMAR invoices
+ * In PDF.js extraction, client name appears BEFORE "Cumparator:" (column layout artifact)
+ * Also appears before "Grup Facturare"
+ */
+function extractTinmarClientName(text: string): string {
+  // Name appears just before "Cumparator:" label (right-column layout)
+  const beforeCumMatch = text.match(/([A-Z][A-Z\s]+)\s+Cumparator:/i);
+  if (beforeCumMatch) {
+    const name = beforeCumMatch[1].trim().replace(/\s+/g, ' ');
+    if (name.length >= 5 && !/TREZORERIA|BANCA|TERMEN|SCADENT/i.test(name)) return name;
+  }
+  // Name at top before "Grup Facturare"
+  const match2 = text.match(/([A-Z][A-Z\s]+)\s+Grup\s+Facturare/i);
+  if (match2) return match2[1].trim().replace(/\s+/g, ' ');
+  return '';
+}
+
+/**
+ * Extracts the total client balance for TINMAR invoices (includes unpaid previous invoices).
+ * Label: "Sold total client (sold anterior + facturi curente)"
+ */
+function extractTinmarSoldTotal(text: string): number {
+  const match = text.match(/Sold\s+total\s+client[^0-9-]*(-?[\d.,]+)/i);
+  if (match) {
+    const num = parseRomanianNumber(match[1]);
+    if (!isNaN(num) && num !== 0) return parseFloat(num.toFixed(2));
+  }
+  return 0;
+}
+
+/**
+ * Extracts "TOTAL DE PLATĂ" for NOVA invoices — full amount including any unpaid balance.
+ */
+function extractNovaSoldTotal(text: string): number {
+  const match = text.match(/TOTAL\s+DE\s+PLAT[AĂ]\s+lei\s+(-?[\d.,]+)/i)
+             || text.match(/TOTAL\s+DE\s+PLAT[AĂ]\s+(-?[\d.,]+)/i);
+  if (match) {
+    const num = parseRomanianNumber(match[1]);
+    if (!isNaN(num) && num !== 0) return parseFloat(num.toFixed(2));
+  }
+  return 0;
+}
+
+/**
+ * Extracts total payment for TINMAR invoices
+ * Format: "Total factura curenta 143.789,17" or "Total factura curenta -78,58" (negative = credit)
+ */
+function extractTinmarTotalPayment(text: string): number {
+  const patterns = [
+    /Total\s+factura\s+curenta\s+(-?[\d.,]+)/i,
+    /Total\s+baza\s+de\s+impozitare\s+TVA:\s+(-?[\d.,]+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const num = parseRomanianNumber(match[1]);
+      if (!isNaN(num) && num !== 0) return parseFloat(num.toFixed(2));
+    }
+  }
+  return 0;
+}
+
+/**
+ * Extracts billing period for TINMAR invoices
+ * Format: "Perioada: [01.07.2024-28.02.2025]"
+ */
+function extractTinmarBillingPeriod(text: string): { startDate: string; endDate: string } {
+  const match = text.match(
+    /Perioada:\s+\[(\d{1,2})\.(\d{1,2})\.(\d{4})-(\d{1,2})\.(\d{1,2})\.(\d{4})\]/i
+  );
+  if (match) {
+    return {
+      startDate: `${match[3]}-${match[2].padStart(2, '0')}-${match[1].padStart(2, '0')}`,
+      endDate: `${match[6]}-${match[5].padStart(2, '0')}-${match[4].padStart(2, '0')}`,
+    };
+  }
+  // Fallback: "De la data: DD.MM.YYYY Pana la data: DD.MM.YYYY"
+  const match2 = text.match(/De\s+la\s+data:\s+(\d{1,2})\.(\d{1,2})\.(\d{4})\s+Pana\s+la\s+data:\s+(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+  if (match2) {
+    return {
+      startDate: `${match2[3]}-${match2[2].padStart(2, '0')}-${match2[1].padStart(2, '0')}`,
+      endDate: `${match2[6]}-${match2[5].padStart(2, '0')}-${match2[4].padStart(2, '0')}`,
+    };
+  }
+  return { startDate: '', endDate: '' };
+}
+
+interface TinmarLocationData {
+  pod: string;
+  locationName: string;
+  address: string;
+  consumptionKwh: number;
+  consumptionUnit: 'kWh' | 'MWh';
+  totalPayment: number;
+  startDate: string;
+  endDate: string;
+}
+
+/**
+ * Extracts all location sections from TINMAR annex pages
+ * Section header format: "RO005EXXXXXXX - PTZ N – Str. Name(Pod: RO005EXXXXXXX) - Romania, ..."
+ */
+function extractTinmarLocations(text: string): TinmarLocationData[] {
+  const locations: TinmarLocationData[] = [];
+
+  // Pattern to match TINMAR location section headers.
+  // Address capture uses lazy (.+?Cod postal: NNNNN) to stop before the next section header;
+  // previously ([^\n]+) consumed the entire page, swallowing subsequent headers on the same page.
+  const headerPattern = /(RO005E[0-9A-Z]+)\s*-\s*(PT[ZA]\s+\d+\s*[–\-]\s*[^(]+)\(Pod:\s*RO005E[0-9A-Z]+\)\s*-\s*(.+?Cod\s+postal[:\s]*[-\d]+)/gi;
+
+  const headers: Array<{ index: number; pod: string; locationName: string; address: string }> = [];
+
+  let headerMatch: RegExpExecArray | null;
+  while ((headerMatch = headerPattern.exec(text)) !== null) {
+    let address = headerMatch[3].trim();
+    // Remove "Cod postal: XXXXX" suffix
+    address = address.replace(/,?\s*Cod\s+postal[:\s]*[-\d]*/i, '').trim();
+    // Remove any trailing invoice item rows that start with "  NN   " (item number pattern)
+    address = address.replace(/\s{2,}\d+\s+.*$/s, '').trim();
+    address = address.replace(/,\s*$/, '').trim();
+
+    headers.push({
+      index: headerMatch.index,
+      pod: headerMatch[1].trim(),
+      locationName: headerMatch[2].trim().replace(/\s*[–\-]\s*$/, '').trim(),
+      address,
+    });
+  }
+
+  for (let i = 0; i < headers.length; i++) {
+    const sectionStart = headers[i].index;
+    const sectionEnd = i < headers.length - 1 ? headers[i + 1].index : text.length;
+    const section = text.substring(sectionStart, sectionEnd);
+
+    // Take FIRST "Pret de baza energie electrica fara Tg MWh [AMOUNT]" row only.
+    // Regularization invoices have multiple such rows (one per sub-period); summing gives inflated results.
+    // Use parseMwhDecimal so "0,659" → 0.659 (not 659 via thousands-separator logic)
+    const baseEnergyMatch = section.match(/Pret\s+de\s+baza\s+energie\s+electrica\s+fara\s+Tg\s+MWh\s+(-?[\d,]+)/i);
+    const totalMwh = baseEnergyMatch ? parseMwhDecimal(baseEnergyMatch[1]) : 0;
+    // Store as MWh (matching invoice unit); ×1000 would give wrong display value
+    const consumptionKwh = !isNaN(totalMwh) && totalMwh !== 0 ? parseFloat(totalMwh.toFixed(6)) : 0;
+
+    // Total per location: prefer "Total factura curenta [AMOUNT]", fallback "Total cu TVA: [AMOUNT]"
+    // Amount can be negative (e.g. credit/storno invoices)
+    const totalMatch = section.match(/Total\s+factura\s+curenta\s+(-?[\d.,]+)/i)
+                    || section.match(/Total\s+cu\s+TVA:\s+(-?[\d.,]+)/i);
+    let totalPayment = 0;
+    if (totalMatch) {
+      const num = parseRomanianNumber(totalMatch[1]);
+      if (!isNaN(num)) totalPayment = parseFloat(num.toFixed(2));
+    }
+
+    // Per-section billing period: look for the first pair of space-separated dates in the section.
+    // The meter reading table has "De la | Pana la" as column headers, but in PDF.js output all
+    // column headers are joined into one string ("De la Pana la M E AC Initial Final MWh ..."),
+    // so the actual dates appear far from the labels. However, the data row has two consecutive
+    // DD.MM.YYYY dates separated by a space (e.g. "01.02.2025 28.02.2025"), whereas date ranges
+    // in service item descriptions use a hyphen ("01.08.2024-31.08.2024") — not space-separated.
+    const meterDatesMatch = section.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+    const secStart = meterDatesMatch
+      ? `${meterDatesMatch[3]}-${meterDatesMatch[2].padStart(2, '0')}-${meterDatesMatch[1].padStart(2, '0')}`
+      : '';
+    const secEnd = meterDatesMatch
+      ? `${meterDatesMatch[6]}-${meterDatesMatch[5].padStart(2, '0')}-${meterDatesMatch[4].padStart(2, '0')}`
+      : '';
+
+    locations.push({
+      pod: headers[i].pod,
+      locationName: headers[i].locationName,
+      address: headers[i].address,
+      consumptionKwh,
+      consumptionUnit: 'MWh',
+      totalPayment,
+      startDate: secStart,
+      endDate: secEnd,
+    });
+  }
+
+  // Fallback for single-location TINMAR invoices (e.g. TE25RP prosumer format)
+  // These don't have "RO005E... - PTZ N – Str.(Pod:...)" section headers in the annex
+  if (locations.length === 0) {
+    const singleLoc = extractTinmarSingleLocation(text);
+    if (singleLoc) locations.push(singleLoc);
+  }
+
+  return locations;
+}
+
+/**
+ * Extracts location data from single-location TINMAR invoices (prosumer / TE25RP format)
+ * Page 1 format: "Punct de Consum: RO005EXXXXXXX - [NAME]" and "Cod POD: RO005EXXXXXXX"
+ */
+function extractTinmarSingleLocation(text: string): TinmarLocationData | null {
+  // POD: "Cod POD: RO005E531457265" or "Cod POD: RO005EXXXXXXX"
+  const podMatch = text.match(/Cod\s+POD:\s+(RO[0-9A-Z]{10,20})/i) ||
+                   text.match(/POD:\s*(RO[0-9A-Z]{10,20})/i);
+  if (!podMatch) return null;
+  const pod = podMatch[1].trim();
+
+  // Location name: "Punct de Consum: RO005EXXXXXXX - [NAME] - PROS  Adresa:"
+  // Use lazy match stopping at " - PROS" or double-space (field separator in joined PDF text)
+  const locMatch = text.match(/Punct\s+(?:de\s+)?Consum:\s+RO[0-9A-Z]+\s*-\s*(.+?)(?:\s+-\s+PROS\b|\s{2,}|$)/i);
+  let locationName = locMatch ? locMatch[1].trim() : '';
+  locationName = locationName.replace(/\s*-\s*PROS\s*$/, '').trim();
+
+  // Address: "Adresa: [addr]  Cod POD:" or "Adresa Loc Consum: [addr], Cod postal: NNN"
+  // Lazy match stopping before "Cod POD", "Cod postal", or double-space
+  const addrMatch = text.match(/Adresa(?:\s+Loc\s+Consum)?:\s+(.*?)(?:\s+Cod\s+(?:POD|postal)|\s{2,}|$)/i);
+  let address = addrMatch ? addrMatch[1].trim() : '';
+  address = address.replace(/,?\s*(?:sector\s*[,.]?)?\s*cod\s+postal[:\s]*\d*/i, '').trim();
+  address = address.replace(/,\s*$/, '').trim();
+
+  // Consumption: prefer "Energie electrica consumata din retea (kwh): NNN"
+  // (actual energy drawn from grid for prosumer invoices)
+  let consumptionKwh = 0;
+  const consumedMatch = text.match(/Energie\s+electrica\s+consumata\s+din\s+retea\s*\([^)]*\)\s*[-:]*\s*([\d.,]+)/i);
+  if (consumedMatch) {
+    const v = parseRomanianNumber(consumedMatch[1]);
+    if (!isNaN(v)) consumptionKwh = Math.round(v);
+  } else {
+    // Fallback: absolute value of MWh excedent from invoice line item
+    // e.g. "Energie produsa si livrata in retea - excedent MWh -0,1520"
+    const mwhMatch = text.match(/livrata\s+in\s+retea\s*-\s*excedent\s+MWh\s+(-?[\d,]+)/i);
+    if (mwhMatch) {
+      const mwh = Math.abs(parseMwhDecimal(mwhMatch[1]));
+      if (!isNaN(mwh)) consumptionKwh = Math.round(mwh * 1000);
+    }
+  }
+
+  return { pod, locationName, address, consumptionKwh, consumptionUnit: 'kWh', totalPayment: 0, startDate: '', endDate: '' };
 }
 
 // ============================================================
@@ -1018,6 +1502,10 @@ export function parseInvoiceText(text: string, fileName: string): InvoiceRecord[
   // Route to appropriate parser based on supplier
   if (supplier === 'PPC ENERGIE') {
     return parsePPCInvoice(text, fileName, supplier);
+  } else if (supplier === 'NOVA POWER&GAS') {
+    return parseNovaInvoice(text, fileName, supplier);
+  } else if (supplier === 'TINMAR ENERGY') {
+    return parseTinmarInvoice(text, fileName, supplier);
   } else {
     // Default to ELECTRICA parser (works for most Romanian invoices)
     return parseElectricaInvoice(text, fileName, supplier);
@@ -1033,6 +1521,14 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
   // Extract common fields
   const invoiceNumber = extractElectricaInvoiceNumber(text);
   let issueDate = extractDate(text, '(?:data[\\s]+emiterii|data[\\s]+emitere|emis[aă]|dat[aă])');
+
+  // EFI format: "Data facturii : 31.12.2024"
+  if (!issueDate) {
+    const efiDateMatch = text.match(/Data\s+facturii[\s:]+([0-9]{1,2})\.([0-9]{1,2})\.([0-9]{4})/i);
+    if (efiDateMatch) {
+      issueDate = `${efiDateMatch[3]}-${efiDateMatch[2].padStart(2,'0')}-${efiDateMatch[1].padStart(2,'0')}`;
+    }
+  }
 
   if (!issueDate) {
     const serieMatch = text.match(/Serie[\s\/]+Nr\.?[\s:]*[A-Z0-9\/\-]{5,}[\s\S]{0,200}?([0-9]{1,2})[\.]([0-9]{1,2})[\.]([0-9]{4})/i);
@@ -1050,16 +1546,32 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
 
   // Find all NLC codes
   const pages = text.split(/---\s*PAGE\s*BREAK\s*---/i);
+
+  // EFI preamble detection: pages that have an EFI invoice number header but no NLC/DETALII content
+  // are financial attachments — skip them and start from the first page with real invoice content.
+  const isEfiPreamblePage = (p: string) =>
+    /Numarul\s+facturii[\s:]+EFI\d+/i.test(p) &&
+    !extractAllNlcCodes(p).length &&
+    !/DETALII\s+LOC\s+DE\s+CONSUM/i.test(p);
+
+  let preamblePageCount = 0;
+  while (preamblePageCount < pages.length && isEfiPreamblePage(pages[preamblePageCount])) {
+    preamblePageCount++;
+  }
+  if (preamblePageCount > 0) {
+    console.log(`EFI preamble: skipping first ${preamblePageCount} page(s)`);
+  }
+
   const allNlcCodes = extractAllNlcCodes(text);
 
   // Check if the invoice has "DETALII LOC DE CONSUM" sections (detail pages)
   const hasDetailSections = /DETALII\s+LOC\s+DE\s+CONSUM/i.test(text);
 
-  // For multi-NLC invoices OR invoices with DETALII sections, skip page 1
-  // Page 1 is the summary and may contain a general NLC + total kWh that would be wrong
-  const shouldSkipFirstPage = (allNlcCodes.length > 1 || hasDetailSections) && pages.length > 1;
+  // Skip preamble pages + page 1 (summary) for multi-NLC or DETALII invoices
+  const pagesToSkip = preamblePageCount + ((allNlcCodes.length > 1 || hasDetailSections) && pages.length > preamblePageCount + 1 ? 1 : 0);
+  const shouldSkipFirstPage = pagesToSkip > 0;
   const textWithoutFirstPage = shouldSkipFirstPage
-    ? pages.slice(1).join('\n\n--- PAGE BREAK ---\n\n')
+    ? pages.slice(pagesToSkip).join('\n\n--- PAGE BREAK ---\n\n')
     : text;
   const nlcCodes = shouldSkipFirstPage
     ? extractAllNlcCodes(textWithoutFirstPage)
@@ -1107,6 +1619,7 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
     const address = extractElectricaAddress(nlcSection);
     const consumption = extractElectricaConsumption(nlcSection);
 
+    console.log(`NLC ${nlcCode} section (first 500 chars):`, nlcSection.substring(0, 500));
     console.log(`NLC ${nlcCode}:`, {
       locationName,
       podCode,
@@ -1134,15 +1647,19 @@ function parseElectricaInvoice(text: string, fileName: string, supplier: string)
 function parsePPCInvoice(text: string, fileName: string, supplier: string): InvoiceRecord[] {
   console.log('Using PPC parser');
 
+  // Normalize text: PDF.js inserts spaces before Romanian diacritics (e.g. "Adres ă" → "Adresă").
+  // This must happen before any pattern matching.
+  const normalizedText = normalizePPCText(text);
+
   // Extract common fields from first page
-  const invoiceNumber = extractPPCInvoiceNumber(text);
-  const issueDate = extractPPCIssueDate(text);
-  const clientName = extractPPCClientName(text) || extractClientName(text);
-  const totalPayment = extractPPCTotalPayment(text);
-  const billingPeriod = extractPPCBillingPeriod(text);
+  const invoiceNumber = extractPPCInvoiceNumber(normalizedText);
+  const issueDate = extractPPCIssueDate(normalizedText);
+  const clientName = extractPPCClientName(normalizedText) || extractClientName(normalizedText);
+  const totalPayment = extractPPCTotalPayment(normalizedText);
+  const billingPeriod = extractPPCBillingPeriod(normalizedText);
 
   // Find all ELECTEL codes
-  const electelCodes = extractAllElectelCodes(text);
+  const electelCodes = extractAllElectelCodes(normalizedText);
 
   console.log('Extracted common fields:', {
     supplier,
@@ -1154,65 +1671,215 @@ function parsePPCInvoice(text: string, fileName: string, supplier: string): Invo
     electelCodesFound: electelCodes.length,
   });
 
-  // If no ELECTEL codes found, create a single record
+  // If no ELECTEL codes found, try splitting by "Adresă loc consum" for multi-location invoices
   if (electelCodes.length === 0) {
-    const locationName = extractPPCLocationName(text);
-    const electelCode = extractElectelCode(text);
-    const podCode = extractPPCPodCode(text);
-    const address = extractPPCAddress(text);
-    const consumption = extractPPCConsumption(text);
+    const addrPattern = /Adres[aă]\s+loc\s+consum/gi;
+    const addrMatches = [...normalizedText.matchAll(addrPattern)];
+
+    if (addrMatches.length > 1) {
+      // Multi-location without ELECTEL — iterate addr-bounded sections
+      const records: InvoiceRecord[] = [];
+      for (let i = 0; i < addrMatches.length; i++) {
+        const addrPos = addrMatches[i].index!;
+        const sectionEnd = i < addrMatches.length - 1 ? addrMatches[i + 1].index! : normalizedText.length;
+        const lookbackStart = Math.max(0, addrPos - 300);
+        const pre = normalizedText.substring(lookbackStart, addrPos);
+        const lastNL = pre.lastIndexOf('\n');
+        const prevNL = lastNL > 0 ? pre.lastIndexOf('\n', lastNL - 1) : -1;
+        const sectionStart = lookbackStart + (prevNL >= 0 ? prevNL + 1 : 0);
+        const section = normalizedText.substring(sectionStart, sectionEnd).trim();
+
+        const locationName = extractPPCLocationName(section);
+        const podCode = extractPPCPodCode(section);
+        const electelCode = extractElectelCode(section);
+        const address = extractPPCAddress(section);
+        const locTotal = extractPPCLocationTotal(section);
+        const consumption = extractPPCConsumption(section);
+        records.push(createInvoiceRecord(
+          fileName, supplier, invoiceNumber, issueDate, clientName,
+          locationName, electelCode, podCode, address,
+          billingPeriod.startDate, billingPeriod.endDate,
+          consumption.value, consumption.sourceLine, locTotal,
+          'kWh', totalPayment
+        ));
+      }
+      if (records.length > 0) return records;
+    }
+
+    // Single location fallback
+    const locationName = extractPPCLocationName(normalizedText);
+    const electelCode = extractElectelCode(normalizedText);
+    const podCode = extractPPCPodCode(normalizedText);
+    const address = extractPPCAddress(normalizedText);
+    const consumption = extractPPCConsumption(normalizedText);
 
     const record = createInvoiceRecord(
       fileName, supplier, invoiceNumber, issueDate, clientName,
       locationName, electelCode, podCode, address,
       billingPeriod.startDate, billingPeriod.endDate,
-      consumption.value, consumption.sourceLine, totalPayment
+      consumption.value, consumption.sourceLine, totalPayment,
+      'kWh', totalPayment
     );
 
     return [record];
   }
 
+  // Multi-location: use per-location totals (each location has its own "Total de plată/loc consum").
+  // Single-location: fall back to invoice-level total.
+  const multiLocation = electelCodes.length > 1;
+
   // Create a record for each ELECTEL code AND each consumption period
   const records: InvoiceRecord[] = [];
 
   for (const electelCode of electelCodes) {
-    const electelSection = extractElectelSection(text, electelCode);
+    const electelSection = extractElectelSection(normalizedText, electelCode);
     const locationName = extractPPCLocationName(electelSection);
     const podCode = extractPPCPodCode(electelSection);
     const address = extractPPCAddress(electelSection);
 
-    // Extract all consumption periods for this ELECTEL
-    const consumptionPeriods = extractPPCConsumptionPeriods(electelSection);
+    // Multi-location: prefer per-section total; fall back to invoice-level total if not found.
+    // Single-location: always use invoice-level total.
+    const locTotal = multiLocation
+      ? extractPPCLocationTotal(electelSection)
+      : totalPayment;
 
-    console.log(`ELECTEL ${electelCode}:`, {
-      locationName,
-      podCode,
-      address: address.substring(0, 50),
-      periodsFound: consumptionPeriods.length,
-    });
+    // Primary: Acciză rows (via extractPPCConsumption) give reliable net kWh per location.
+    // One record per location using the invoice billing period.
+    const consumption = extractPPCConsumption(electelSection);
+    records.push(createInvoiceRecord(
+      fileName, supplier, invoiceNumber, issueDate, clientName,
+      locationName, electelCode, podCode, address,
+      billingPeriod.startDate, billingPeriod.endDate,
+      consumption.value, consumption.sourceLine, locTotal,
+      'kWh', totalPayment
+    ));
+  }
 
-    if (consumptionPeriods.length > 0) {
-      // Create one record per consumption period
-      for (const period of consumptionPeriods) {
-        const record = createInvoiceRecord(
-          fileName, supplier, invoiceNumber, issueDate, clientName,
-          locationName, electelCode, podCode, address,
-          period.startDate, period.endDate,
-          period.kWh, period.sourceLine, totalPayment
-        );
-        records.push(record);
-      }
-    } else {
-      // Fallback: create single record with overall billing period
-      const consumption = extractPPCConsumption(electelSection);
-      const record = createInvoiceRecord(
-        fileName, supplier, invoiceNumber, issueDate, clientName,
-        locationName, electelCode, podCode, address,
-        billingPeriod.startDate, billingPeriod.endDate,
-        consumption.value, consumption.sourceLine, totalPayment
+  return records;
+}
+
+/**
+ * Parses NOVA POWER&GAS invoices
+ * Multi-location invoice: page 1 = summary, pages 2+ = one location per page
+ */
+function parseNovaInvoice(text: string, fileName: string, supplier: string): InvoiceRecord[] {
+  console.log('Using NOVA POWER&GAS parser');
+
+  const invoiceNumber = extractNovaInvoiceNumber(text);
+  const issueDate = extractNovaIssueDate(text);
+  const clientName = extractNovaClientName(text);
+  const totalPayment = extractNovaTotalPayment(text);
+  const soldTotal = extractNovaSoldTotal(text);
+  const billingPeriod = extractNovaBillingPeriod(text);
+
+  console.log('NOVA common fields:', { invoiceNumber, issueDate, clientName, totalPayment, billingPeriod });
+
+  const pages = text.split(/---\s*PAGE\s*BREAK\s*---/i);
+  const records: InvoiceRecord[] = [];
+
+  // Pages 2+ each contain one location
+  for (let i = 1; i < pages.length; i++) {
+    const page = pages[i];
+    // Only process location pages: electricity/compensation has POD: or POD/CLC:, gas has "Adresă loc de consum"
+    if (!/POD[/\s:]*RO/i.test(page) && !/Adres[aă]\s+loc\s+de\s+consum/i.test(page)) continue;
+
+    const loc = extractNovaLocationFromPage(page);
+    console.log(`NOVA page ${i + 1}:`, { pod: loc.pod, nlc: loc.nlcCode, consumption: loc.consumptionMwh });
+
+    if (!loc.pod && !loc.nlcCode) continue;
+
+    // PRO prosumer: standard electricity pattern doesn't match (line item uses "MWh -0,241000" order).
+    // Look in full invoice text (annex page) for "Energie electrică consumată din rețea (MWh) [value] MWh".
+    let consumptionMwh = loc.consumptionMwh;
+    if ((isNaN(consumptionMwh) || consumptionMwh === 0) && invoiceNumber.startsWith('PRO-')) {
+      const annexMatch = text.match(
+        /Energie\s+electric[aă]\s+consumat[aă]\s+din\s+re[tț]ea\s*\(MWh\)\s*([\d,]+)\s*MWh/i
       );
-      records.push(record);
+      if (annexMatch) {
+        const mwh = parseMwhDecimal(annexMatch[1]);
+        if (!isNaN(mwh) && mwh !== 0) consumptionMwh = mwh;
+      }
     }
+
+    // All NOVA electricity stored as MWh (gas stays MWh too). consumptionKwh field holds the MWh value.
+    const consumptionKwh = isNaN(consumptionMwh) ? 0 : parseFloat(consumptionMwh.toFixed(6));
+    const startDate = loc.startDate || billingPeriod.startDate;
+    const endDate = loc.endDate || billingPeriod.endDate;
+    // Always use invoice-level total (VALOARE FACTURA CURENTA) for all locations.
+    // Per-location totals are not shown as they inflate the apparent invoice value.
+    const locTotal = totalPayment;
+
+    const record = createInvoiceRecord(
+      fileName, supplier, invoiceNumber, issueDate, clientName,
+      loc.locationName, loc.nlcCode, loc.pod, loc.address,
+      startDate, endDate, consumptionKwh, 'Energie activă', locTotal,
+      'MWh', soldTotal
+    );
+    records.push(record);
+  }
+
+  // Fallback: if no location pages found, create single record
+  if (records.length === 0) {
+    const record = createInvoiceRecord(
+      fileName, supplier, invoiceNumber, issueDate, clientName,
+      '', '', '', '',
+      billingPeriod.startDate, billingPeriod.endDate, 0, '', totalPayment,
+      'kWh', soldTotal
+    );
+    records.push(record);
+  }
+
+  return records;
+}
+
+/**
+ * Parses TINMAR ENERGY invoices
+ * Pages 1–2 = invoice header, pages 3+ = annex with location sections per POD
+ */
+function parseTinmarInvoice(text: string, fileName: string, supplier: string): InvoiceRecord[] {
+  console.log('Using TINMAR ENERGY parser');
+
+  const invoiceNumber = extractTinmarInvoiceNumber(text);
+  const issueDate = extractTinmarIssueDate(text);
+  const clientName = extractTinmarClientName(text);
+  const totalPayment = extractTinmarTotalPayment(text);
+  const soldTotal = extractTinmarSoldTotal(text);
+  const billingPeriod = extractTinmarBillingPeriod(text);
+
+  console.log('TINMAR common fields:', { invoiceNumber, issueDate, clientName, totalPayment, billingPeriod });
+
+  const locations = extractTinmarLocations(text);
+  console.log('TINMAR locations found:', locations.length);
+
+  const records: InvoiceRecord[] = [];
+
+  for (const loc of locations) {
+    // For single-location invoices (prosumer / TE25RP), per-loc total is 0; use invoice-level total
+    const locTotal = loc.totalPayment !== 0 ? loc.totalPayment : (locations.length === 1 ? totalPayment : 0);
+    console.log(`TINMAR location:`, { pod: loc.pod, consumption: loc.consumptionKwh, total: locTotal });
+
+    // Use per-section dates when available; fall back to invoice-level period
+    const startDate = loc.startDate || billingPeriod.startDate;
+    const endDate = loc.endDate || billingPeriod.endDate;
+    const record = createInvoiceRecord(
+      fileName, supplier, invoiceNumber, issueDate, clientName,
+      loc.locationName, loc.pod, loc.pod, loc.address,
+      startDate, endDate,
+      loc.consumptionKwh, 'Energie activă', locTotal,
+      loc.consumptionUnit, soldTotal
+    );
+    records.push(record);
+  }
+
+  // Fallback: if no locations found, create single record
+  if (records.length === 0) {
+    const record = createInvoiceRecord(
+      fileName, supplier, invoiceNumber, issueDate, clientName,
+      '', '', '', '',
+      billingPeriod.startDate, billingPeriod.endDate, 0, '', totalPayment,
+      'kWh', soldTotal
+    );
+    records.push(record);
   }
 
   return records;
@@ -1235,7 +1902,9 @@ function createInvoiceRecord(
   endDate: string,
   consumptionKwh: number,
   sourceLine: string,
-  totalPayment: number
+  totalPayment: number,
+  consumptionUnit: 'kWh' | 'MWh' = 'kWh',
+  soldTotal: number = 0
 ): InvoiceRecord {
   let status: 'OK' | 'INCOMPLETE' | 'ERROR' = 'OK';
   const missingFields: string[] = [];
@@ -1273,8 +1942,10 @@ function createInvoiceRecord(
     startDate,
     endDate,
     consumptionKwh,
+    consumptionUnit,
     sourceLine: sourceLine || 'N/A',
     totalPayment,
+    soldTotal,
     processingDate: new Date().toISOString().split('T')[0],
     documentLink: '',
     status,
